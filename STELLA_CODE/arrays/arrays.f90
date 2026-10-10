@@ -52,6 +52,7 @@ module arrays
    ! For flow shear
    public :: shift_state
    public :: flow_shear_moving_k, kx_phys, shift_stage
+   public :: flow_shear_moving_k_import_zero_phase_seed
    
    ! For the reponse matrix
    public :: response_matrix
@@ -129,6 +130,7 @@ module arrays
    ! physical radial wavenumber of mode (iky, ikx) is kx_phys(iky, ikx).
    ! <shift_stage> is the residual shear time of the current Runge-Kutta stage.
    logical :: flow_shear_moving_k = .false.
+   logical :: flow_shear_moving_k_import_zero_phase_seed = .false.
    real, dimension(:, :), allocatable :: kx_phys
    real, dimension(:), allocatable :: shift_stage
 

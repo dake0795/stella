@@ -508,6 +508,7 @@
   moving_k_stream_offset_sets = 0
   moving_k_stream_offset_rows = 3
   moving_k_stream_offset_keep_on_dt_change = .false.
+  flow_shear_moving_k_import_zero_phase_seed = .false.
 /
 
 &sources

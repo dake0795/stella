@@ -1398,6 +1398,7 @@ $(OBJ_DIR)/save_stella_for_restart.o: \
 	 $(OBJ_DIR)/common_types.o \
 	 $(OBJ_DIR)/file_units.o \
 	 $(OBJ_DIR)/file_utils.o \
+	 $(OBJ_DIR)/gk_flow_shear.o \
 	 $(OBJ_DIR)/gk_sources.o \
 	 $(OBJ_DIR)/grids_kxky.o \
 	 $(OBJ_DIR)/grids_velocity.o \

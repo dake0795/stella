@@ -105,7 +105,7 @@ contains
       
       ! Read namelists from input file
       use namelist_flow_shear, only: read_namelist_flow_shear
-      use arrays, only: flow_shear_moving_k
+      use arrays, only: flow_shear_moving_k, flow_shear_moving_k_import_zero_phase_seed
 
       implicit none
 
@@ -116,7 +116,7 @@ contains
          omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k, &
          moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method, &
          moving_k_stream_offset_sets, moving_k_stream_offset_rows, &
-         moving_k_stream_offset_keep_on_dt_change)
+         moving_k_stream_offset_keep_on_dt_change, flow_shear_moving_k_import_zero_phase_seed)
       
       ! Broadcast the input parameters
       call broadcast(prp_shear_enabled)
@@ -130,6 +130,7 @@ contains
       call broadcast(moving_k_stream_offset_sets)
       call broadcast(moving_k_stream_offset_rows)
       call broadcast(moving_k_stream_offset_keep_on_dt_change)
+      call broadcast(flow_shear_moving_k_import_zero_phase_seed)
       call broadcast(g_exb)
       call broadcast(g_exbfac)
       call broadcast(omprimfac)

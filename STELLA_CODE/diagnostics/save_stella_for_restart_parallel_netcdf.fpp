@@ -62,6 +62,8 @@ module save_stella_for_restart_parallel_netcdf
    integer(kind_nf) :: t0id, gr_id, gi_id, delt0id, istep0id
    integer(kind_nf) :: intkrook_id, intproj_id;
    integer(kind_nf) :: shift_id
+   ! Moving-wavevector flow shear
+   integer(kind_nf) :: movingk_id, movingk_conv_id, akxlabel_id, akylabel_id, shearrate_id
    logical :: initialised_restart_module = .false.
 #endif
 
@@ -96,7 +98,9 @@ contains
       use gk_sources, only: source_option_switch, int_krook, int_proj
       use arrays_distribution_function, only: g_krook, g_proj
       use arrays_fields, only: phi_proj
-      use arrays, only: shift_state
+      use arrays, only: shift_state, flow_shear_moving_k
+      use grids_kxky, only: akx, aky
+      use gk_flow_shear, only: g_exb, g_exbfac
       
       ! Make sure we have the distribution function vs (nvpa, nmu, -kxkyz-layout-)
       use redistribute, only: scatter
@@ -210,6 +214,21 @@ contains
             istatus = nf90_def_var(ncid, "shiftstate", netcdf_real, (/kyid/), shift_id)
             if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var shiftstate error: ", istatus)
  
+            ! Moving-wavevector flow shear (phase convention 1, see save_stella_for_restart)
+            if (flow_shear_moving_k) then
+               istatus = nf90_def_var(ncid, "moving_k", nf90_int, movingk_id)
+               if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var moving_k error: ", istatus)
+               istatus = nf90_def_var(ncid, "moving_k_convention", nf90_int, movingk_conv_id)
+               if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var moving_k_convention error: ", istatus)
+               istatus = nf90_def_var(ncid, "akx_label", netcdf_real, (/kxid/), akxlabel_id)
+               if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var akx_label error: ", istatus)
+               istatus = nf90_def_var(ncid, "aky_label", netcdf_real, (/kyid/), akylabel_id)
+               if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var aky_label error: ", istatus)
+               istatus = nf90_def_var(ncid, "shear_rate", netcdf_real, shearrate_id)
+               if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var shear_rate error: ", istatus)
+            end if
+
+ 
             ! Radial variation and Sources
             if (source_option_switch == source_option_krook .and. has_vmulo) then
                istatus = nf90_def_var(ncid, "intkrook", netcdf_real, intkrook_id)
@@ -290,6 +309,20 @@ contains
          ! Flow shear
          istatus = nf90_put_var(ncid, shift_id, shift_state)
          if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, shift_id)
+
+         ! Moving-wavevector flow shear
+         if (flow_shear_moving_k) then
+            istatus = nf90_put_var(ncid, movingk_id, 1)
+            if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, movingk_id)
+            istatus = nf90_put_var(ncid, movingk_conv_id, 1)
+            if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, movingk_conv_id)
+            istatus = nf90_put_var(ncid, akxlabel_id, akx)
+            if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, akxlabel_id)
+            istatus = nf90_put_var(ncid, akylabel_id, aky)
+            if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, akylabel_id)
+            istatus = nf90_put_var(ncid, shearrate_id, g_exb * g_exbfac)
+            if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, shearrate_id)
+         end if
 
          ! Radial variation and sources
          if (source_option_switch == source_option_krook .and. has_vmulo) then
@@ -381,7 +414,8 @@ contains
    !****************************************************************************
    !            Read distribution function from a single netcdf file            
    !****************************************************************************
-   subroutine read_stella_data_for_restart_from_single_file(g, scale, istatus, restart_file)
+   subroutine read_stella_data_for_restart_from_single_file(g, scale, istatus, restart_file, &
+         moving_k_marker, moving_k_convention, shear_rate, akx_label, aky_label, file_nakx, file_naky)
       
       ! Parallelisation
       use mp, only: iproc, broadcast, proc0
@@ -412,8 +446,13 @@ contains
       real, intent(in) :: scale
       integer, intent(out) :: istatus
       character(300), intent(in out) :: restart_file
+      ! Moving-wavevector flow shear (marker 0 if the file has no moving-k variables)
+      integer, intent(out) :: moving_k_marker, moving_k_convention, file_nakx, file_naky
+      real, intent(out) :: shear_rate
+      real, dimension(:), intent(out) :: akx_label, aky_label
    
       ! Variables
+      integer :: status_local
       integer, dimension(3) :: counts, start_pos
       integer, dimension(4) :: counts_krook, start_pos_krook
       character(306) :: path_netcdf_file_per_proc
@@ -427,6 +466,9 @@ contains
 
       n_elements = kxkyz_lo%ulim_proc - kxkyz_lo%llim_proc + 1
       nvmulo_elements = vmu_lo%ulim_proc - vmu_lo%llim_proc + 1
+
+      moving_k_marker = 0; moving_k_convention = 0; file_nakx = -1; file_naky = -1
+      shear_rate = 0.0; akx_label = 0.0; aky_label = 0.0
 
       if (n_elements <= 0) return
 
@@ -617,6 +659,25 @@ contains
       if (.not. allocated(shift_state)) allocate (shift_state(naky))
       istatus = nf90_get_var(ncid, shift_id, shift_state)
       if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, shift_id)
+
+      ! Moving-wavevector flow shear (absent in other checkpoints); missing variables
+      ! keep their defaults and are checked by the caller after the broadcast
+      status_local = nf90_inquire_dimension(ncid, kxid, len=file_nakx)
+      status_local = nf90_inquire_dimension(ncid, kyid, len=file_naky)
+      status_local = nf90_inq_varid(ncid, "moving_k", movingk_id)
+      if (status_local == NF90_NOERR) then
+         status_local = nf90_get_var(ncid, movingk_id, moving_k_marker)
+         status_local = nf90_inq_varid(ncid, "moving_k_convention", movingk_conv_id)
+         if (status_local == NF90_NOERR) status_local = nf90_get_var(ncid, movingk_conv_id, moving_k_convention)
+         status_local = nf90_inq_varid(ncid, "shear_rate", shearrate_id)
+         if (status_local == NF90_NOERR) status_local = nf90_get_var(ncid, shearrate_id, shear_rate)
+         if (file_nakx == size(akx_label) .and. file_naky == size(aky_label)) then
+            status_local = nf90_inq_varid(ncid, "akx_label", akxlabel_id)
+            if (status_local == NF90_NOERR) status_local = nf90_get_var(ncid, akxlabel_id, akx_label)
+            status_local = nf90_inq_varid(ncid, "aky_label", akylabel_id)
+            if (status_local == NF90_NOERR) status_local = nf90_get_var(ncid, akylabel_id, aky_label)
+         end if
+      end if
 
       if (scale > 0.) then
          g = g * scale

@@ -61,10 +61,25 @@ module save_stella_for_restart
    integer(kind_nf) :: t0id, gr_id, gi_id, delt0id, istep0id
    integer(kind_nf) :: intkrook_id, intproj_id;
    integer(kind_nf) :: shift_id
+   integer(kind_nf) :: movingk_id, movingk_conv_id, akxlabel_id, akylabel_id, shearrate_id
    logical :: initialised_restart_module = .false.
 #endif
    logical :: intialised_parallel_netcdf = .false.
    logical :: parallel_netcdf
+
+   ! Moving-wavevector flow shear. A checkpoint written with flow_shear_moving_k
+   ! contains the marker <moving_k> = 1, the version of the phase convention, the
+   ! kx and ky labels and the signed shear rate. Convention 1: <shiftstate> is the
+   ! committed residual shear time tau, |tau| <= T_ky/2 (zero for ky = 0), and g
+   ! is the distribution function at kx_phys = akx - g_exb*g_exbfac*aky*tau.
+   ! restart_moving_k = 0 means that the checkpoint has no moving-k marker.
+   integer, parameter :: moving_k_convention_version = 1
+   integer :: restart_moving_k = 0
+   integer :: restart_moving_k_convention = 0
+   integer :: restart_file_nakx = -1
+   integer :: restart_file_naky = -1
+   real :: restart_shear_rate = 0.0
+   real, dimension(:), allocatable :: restart_akx, restart_aky
 
 contains
 
@@ -143,8 +158,7 @@ contains
       use grids_kxky, only: naky, nakx
       
       ! Flow shear
-      use arrays, only: shift_state
-      
+      use arrays, only: shift_state, flow_shear_moving_k
       ! Make sure we have the distribution function vs (nvpa, nmu, -kxkyz-layout-)
       use redistribute, only: scatter
       use initialise_redistribute, only: kxkyz2vmu
@@ -261,6 +275,9 @@ contains
             istatus = nf90_def_var(ncid, "shiftstate", netcdf_real, (/kyid/), shift_id)
             if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var shiftstate error: ", istatus)
             
+            ! Moving-wavevector flow shear
+            if (flow_shear_moving_k) call save_moving_k_to_netcdf_def_var()
+
             ! Radial variation and Sources
             call save_radial_variation_to_netcdf_def_var()
 
@@ -306,6 +323,9 @@ contains
          ! Flow shear
          istatus = nf90_put_var(ncid, shift_id, shift_state)
          if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, shift_id)
+
+         ! Moving-wavevector flow shear
+         if (flow_shear_moving_k) call save_moving_k_to_netcdf_put_var()
          
          ! Radial variation and sources
          call save_radial_variation_to_netcdf_put_var()
@@ -428,6 +448,51 @@ contains
       
       end subroutine save_radial_variation_to_netcdf_put_var
 
+      !----------- Moving-wavevector flow shear: Define the variables ----------
+      subroutine save_moving_k_to_netcdf_def_var
+
+         implicit none
+
+         !----------------------------------------------------------------------
+
+         istatus = nf90_def_var(ncid, "moving_k", nf90_int, movingk_id)
+         if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var moving_k error: ", istatus)
+         istatus = nf90_def_var(ncid, "moving_k_convention", nf90_int, movingk_conv_id)
+         if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var moving_k_convention error: ", istatus)
+         istatus = nf90_def_var(ncid, "akx_label", netcdf_real, (/kxid/), akxlabel_id)
+         if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var akx_label error: ", istatus)
+         istatus = nf90_def_var(ncid, "aky_label", netcdf_real, (/kyid/), akylabel_id)
+         if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var aky_label error: ", istatus)
+         istatus = nf90_def_var(ncid, "shear_rate", netcdf_real, shearrate_id)
+         if (istatus /= NF90_NOERR) call process_nf90_error("nf90_def_var shear_rate error: ", istatus)
+
+      end subroutine save_moving_k_to_netcdf_def_var
+
+      !------------ Moving-wavevector flow shear: Write the variables ----------
+      subroutine save_moving_k_to_netcdf_put_var
+
+         use grids_kxky, only: akx, aky
+         use gk_flow_shear, only: g_exb, g_exbfac
+
+         implicit none
+
+         !----------------------------------------------------------------------
+
+         ! <shiftstate> holds the committed phase; the labels and the shear rate
+         ! allow a restart to check that the phase has the same meaning
+         istatus = nf90_put_var(ncid, movingk_id, 1)
+         if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, movingk_id)
+         istatus = nf90_put_var(ncid, movingk_conv_id, moving_k_convention_version)
+         if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, movingk_conv_id)
+         istatus = nf90_put_var(ncid, akxlabel_id, akx)
+         if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, akxlabel_id)
+         istatus = nf90_put_var(ncid, akylabel_id, aky)
+         if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, akylabel_id)
+         istatus = nf90_put_var(ncid, shearrate_id, g_exb * g_exbfac)
+         if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, shearrate_id)
+
+      end subroutine save_moving_k_to_netcdf_put_var
+
    end subroutine save_stella_data_for_restart_to_multiple_files
 #endif
 
@@ -445,6 +510,7 @@ contains
       use grids_kxky, only: naky
       use arrays, only: shift_state
 #ifdef NETCDF_PARALLEL
+      use grids_kxky, only: nakx
       use save_stella_for_restart_parallel_netcdf, only: read_stella_data_for_restart_from_single_file
 #endif
 
@@ -484,7 +550,13 @@ contains
       istatus = 0
       if (save_many) call read_stella_data_for_restart_from_multiple_files(g, scale, istatus)
 #ifdef NETCDF_PARALLEL
-      if (.not. save_many) call read_stella_data_for_restart_from_single_file(g, scale, istatus, restart_file)
+      if (.not. save_many) then
+         if (.not. allocated(restart_akx)) allocate (restart_akx(nakx))
+         if (.not. allocated(restart_aky)) allocate (restart_aky(naky))
+         call read_stella_data_for_restart_from_single_file(g, scale, istatus, restart_file, &
+            restart_moving_k, restart_moving_k_convention, restart_shear_rate, &
+            restart_akx, restart_aky, restart_file_nakx, restart_file_naky)
+      end if
 #endif
 
       ! These processors do not read the remap clock <shift_state> either. Every processor
@@ -492,6 +564,9 @@ contains
       ! so they all need the clock of the restart file.
       if (.not. allocated(shift_state)) allocate (shift_state(naky))
       call broadcast(shift_state)
+
+      ! Moving-wavevector flow shear: check the restored phase
+      call broadcast_and_validate_moving_k_restart
 #else
       write(*,*) 'Could not read restart data from a netcdf file, since netcdf is not loaded.'
 #endif
@@ -649,6 +724,9 @@ contains
       istatus = nf90_get_var(ncid, shift_id, shift_state)
       if (istatus /= NF90_NOERR) call netcdf_error(istatus, ncid, shift_id)
       
+      ! Moving-wavevector flow shear (absent in other checkpoints)
+      call read_moving_k_from_netcdf_variables()
+
       ! Radial variation and sources
       call read_radial_variation_from_netcdf_variables(scale)
 
@@ -779,8 +857,145 @@ contains
             
       end subroutine read_radial_variation_from_netcdf_variables
 
+      !------------ Moving-wavevector flow shear: Read the variables -----------
+      subroutine read_moving_k_from_netcdf_variables
+
+         implicit none
+
+         ! A checkpoint without the moving-k marker is not an error here
+         integer :: status_local
+
+         !----------------------------------------------------------------------
+
+         restart_moving_k = 0
+         restart_moving_k_convention = 0
+         restart_shear_rate = 0.0
+         restart_file_nakx = -1
+         restart_file_naky = -1
+         if (.not. allocated(restart_akx)) allocate (restart_akx(nakx))
+         if (.not. allocated(restart_aky)) allocate (restart_aky(naky))
+         restart_akx = 0.0
+         restart_aky = 0.0
+
+         ! Dimensions of the saved labels
+         status_local = nf90_inquire_dimension(ncid, kxid, len=restart_file_nakx)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, dimid=kxid)
+         status_local = nf90_inquire_dimension(ncid, kyid, len=restart_file_naky)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, dimid=kyid)
+
+         ! Without the marker there is nothing else to read. Missing or unreadable
+         ! variables keep their defaults and are rejected after the broadcast.
+         status_local = nf90_inq_varid(ncid, "moving_k", movingk_id)
+         if (status_local /= NF90_NOERR) return
+         status_local = nf90_get_var(ncid, movingk_id, restart_moving_k)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='moving_k')
+         status_local = nf90_inq_varid(ncid, "moving_k_convention", movingk_conv_id)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='moving_k_convention')
+         status_local = nf90_get_var(ncid, movingk_conv_id, restart_moving_k_convention)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='moving_k_convention')
+         status_local = nf90_inq_varid(ncid, "shear_rate", shearrate_id)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='shear_rate')
+         status_local = nf90_get_var(ncid, shearrate_id, restart_shear_rate)
+         if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='shear_rate')
+         if (restart_file_nakx == nakx .and. restart_file_naky == naky) then
+            status_local = nf90_inq_varid(ncid, "akx_label", akxlabel_id)
+            if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='akx_label')
+            status_local = nf90_get_var(ncid, akxlabel_id, restart_akx)
+            if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='akx_label')
+            status_local = nf90_inq_varid(ncid, "aky_label", akylabel_id)
+            if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='aky_label')
+            status_local = nf90_get_var(ncid, akylabel_id, restart_aky)
+            if (status_local /= NF90_NOERR) call netcdf_error(status_local, ncid, var='aky_label')
+         end if
+
+      end subroutine read_moving_k_from_netcdf_variables
+
    end subroutine read_stella_data_for_restart_from_multiple_files
 #endif
+   
+   !****************************************************************************
+   !         Moving-wavevector flow shear: check the restored phase
+   !****************************************************************************
+   ! Called on every processor after the checkpoint has been read. Processors
+   ! without a checkpoint file still hold the defaults, so the variables are
+   ! broadcast from proc0 first (<shift_state> has already been broadcast).
+   ! A moving-k simulation is continued only from a moving-k checkpoint with the
+   ! same labels and shear rate. A checkpoint without the marker and with zero
+   ! phase can be used as the initial condition if explicitly requested, since
+   ! at zero phase the label and physical wavenumbers coincide.
+   !****************************************************************************
+   subroutine broadcast_and_validate_moving_k_restart
+
+      use mp, only: proc0, broadcast, mp_abort
+      use arrays, only: flow_shear_moving_k, shift_state
+      use arrays, only: flow_shear_moving_k_import_zero_phase_seed
+      use grids_kxky, only: nakx, naky, akx, aky
+      use gk_flow_shear, only: g_exb, g_exbfac
+
+      implicit none
+
+      integer :: iky
+      real :: shear_rate, half_period, tolerance
+
+      !-------------------------------------------------------------------------
+
+      if (.not. allocated(restart_akx)) then
+         allocate (restart_akx(nakx))
+         restart_akx = 0.0
+      end if
+      if (.not. allocated(restart_aky)) then
+         allocate (restart_aky(naky))
+         restart_aky = 0.0
+      end if
+      call broadcast(restart_moving_k)
+      call broadcast(restart_moving_k_convention)
+      call broadcast(restart_file_nakx)
+      call broadcast(restart_file_naky)
+      call broadcast(restart_shear_rate)
+      call broadcast(restart_akx)
+      call broadcast(restart_aky)
+
+      ! The fixed-grid treatment can not continue a moving-k checkpoint
+      if (.not. flow_shear_moving_k) then
+         if (restart_moving_k /= 0) call mp_abort('the restart file was written with flow_shear_moving_k = T; ' // &
+            'it can not be continued with flow_shear_moving_k = F')
+         return
+      end if
+
+      if (restart_file_nakx /= nakx .or. restart_file_naky /= naky) &
+         call mp_abort('moving-k restart: the (nakx, naky) of the restart file differ from the input')
+
+      if (restart_moving_k == 0) then
+         if (any(shift_state /= 0.0)) call mp_abort('moving-k restart: the restart file was written without ' // &
+            'flow_shear_moving_k at a nonzero remap phase and can not be continued with flow_shear_moving_k = T')
+         if (.not. flow_shear_moving_k_import_zero_phase_seed) call mp_abort('moving-k restart: the restart file ' // &
+            'was written without flow_shear_moving_k; set flow_shear_moving_k_import_zero_phase_seed = T to use it ' // &
+            'as the initial condition')
+         if (proc0) write (*, *) 'Moving-k flow shear: restart file without moving-k phase used as the initial condition.'
+         return
+      end if
+
+      if (restart_moving_k /= 1 .or. restart_moving_k_convention /= moving_k_convention_version) &
+         call mp_abort('moving-k restart: unknown moving-k marker or convention in the restart file')
+      tolerance = 8.0 * epsilon(0.0)
+      if (any(abs(restart_akx - akx) > tolerance * max(1.0, abs(akx)))) &
+         call mp_abort('moving-k restart: the kx labels of the restart file differ from the input')
+      if (any(abs(restart_aky - aky) > tolerance * max(1.0, abs(aky)))) &
+         call mp_abort('moving-k restart: the ky grid of the restart file differs from the input')
+      shear_rate = g_exb * g_exbfac
+      if (abs(restart_shear_rate - shear_rate) > tolerance * max(1.0, abs(shear_rate))) &
+         call mp_abort('moving-k restart: the shear rate g_exb*g_exbfac of the restart file differs from the input')
+      do iky = 1, naky
+         if (aky(iky) == 0.0) then
+            if (shift_state(iky) /= 0.0) call mp_abort('moving-k restart: nonzero phase of the ky = 0 modes')
+            cycle
+         end if
+         half_period = 0.5 * abs(akx(2) / (aky(iky) * shear_rate))
+         if (abs(shift_state(iky)) > half_period * (1.0 + 1.0e-9)) &
+            call mp_abort('moving-k restart: the phase of the restart file is outside |tau| <= T/2')
+      end do
+
+   end subroutine broadcast_and_validate_moving_k_restart
    
    !****************************************************************************
    !                                      Title
