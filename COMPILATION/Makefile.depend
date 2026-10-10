@@ -808,6 +808,7 @@ $(OBJ_DIR)/gk_flow_shear_moving_k.o: \
 	 $(OBJ_DIR)/file_utils.o \
 	 $(OBJ_DIR)/geometry.o \
 	 $(OBJ_DIR)/gk_flow_shear.o \
+	 $(OBJ_DIR)/gk_implicit_terms.o \
 	 $(OBJ_DIR)/gk_sources.o \
 	 $(OBJ_DIR)/grids_kxky.o \
 	 $(OBJ_DIR)/grids_species.o \
@@ -821,7 +822,8 @@ $(OBJ_DIR)/gk_flow_shear_moving_k.o: \
 	 $(OBJ_DIR)/parallelisation_layouts.o \
 	 $(OBJ_DIR)/parameters_multibox.o \
 	 $(OBJ_DIR)/parameters_numerical.o \
-	 $(OBJ_DIR)/parameters_physics.o 
+	 $(OBJ_DIR)/parameters_physics.o \
+	 $(OBJ_DIR)/response_matrix.o 
 $(OBJ_DIR)/gk_implicit_terms.o: \
 	 $(OBJ_DIR)/arrays.o \
 	 $(OBJ_DIR)/arrays_distribution_function.o \

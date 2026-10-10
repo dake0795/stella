@@ -182,6 +182,7 @@ contains
       use gk_flow_shear, only: advance_perp_flow_shear
       use arrays, only: flow_shear_moving_k
       use gk_flow_shear_moving_k, only: prepare_moving_k_stage, relabel_moving_k
+      use gk_flow_shear_moving_k, only: rebuild_response_on_label_metric
       
       ! Grids
       use grids_z, only: nzgrid
@@ -248,6 +249,7 @@ contains
       ! step is restarted, restore the metric of the committed state instead.
       if (flow_shear_moving_k) then
          if (restart_time_step) then
+            if (stream_split) call rebuild_response_on_label_metric
             call prepare_moving_k_stage(0.0)
             if (proc0) call time_message(.false., time_gke(:, 8), ' explicit')
             return
@@ -332,7 +334,11 @@ contains
 
       ! Implicit terms
       use gk_mirror, only: advance_mirror_implicit, refresh_mirror_response_for_metric
-      use gk_implicit_terms, only: advance_implicit_terms
+      use gk_implicit_terms, only: advance_implicit_terms, stream_defect_active
+
+      ! Moving-wavevector flow shear
+      use arrays, only: flow_shear_moving_k
+      use gk_flow_shear_moving_k, only: set_stream_defect_scaling
 
       implicit none
 
@@ -370,12 +376,40 @@ contains
 
       if (stream_split) then
          call advance_fields(g, phi, apar, bpar, dist='g')
+         ! Moving-wavevector flow shear: iterate to the solution at the physical wavenumbers
+         if (flow_shear_moving_k) call set_stream_defect_scaling
+         stream_defect_active = flow_shear_moving_k
          call advance_implicit_terms(g, phi, apar, bpar)
+         stream_defect_active = .false.
          fields_updated = .false.
          call advance_fields(g, phi, apar, bpar, dist='g')
+         if (flow_shear_moving_k) call write_stream_defect_statistics
       end if
 
    end subroutine advance_implicit_split
+
+   !****************************************************************************
+   !     Iterations of the defect correction of the implicit streaming
+   !****************************************************************************
+   subroutine write_stream_defect_statistics
+
+      use mp, only: proc0
+      use gk_implicit_terms, only: stream_defect_iters
+
+      implicit none
+
+      integer, save :: ncalls = 0, total_iters = 0, max_iters = 0
+
+      !-------------------------------------------------------------------------
+
+      ncalls = ncalls + 1
+      total_iters = total_iters + stream_defect_iters
+      max_iters = max(max_iters, stream_defect_iters)
+      if (proc0 .and. mod(ncalls, 500) == 0) write (*, '(A,I0,A,F8.3,A,I0)') &
+         ' Implicit streaming defect correction: steps = ', ncalls, ', mean iterations = ', &
+         real(total_iters) / real(ncalls), ', maximum = ', max_iters
+
+   end subroutine write_stream_defect_statistics
 
    !****************************************************************************
    !                 SYNCHRONISE TWIST-AND-SHIFT JUNCTION POINTS

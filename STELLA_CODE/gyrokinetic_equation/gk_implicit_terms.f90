@@ -42,7 +42,29 @@ module gk_implicit_terms
    public :: get_gke_rhs
    public :: sweep_g_zext
 
+   ! Defect correction of the implicit streaming solve for the moving-wavevector flow shear
+   public :: stream_defect_active, stream_defect_tol, stream_defect_maxit, stream_defect_method
+   public :: stream_defect_scale_phi, stream_defect_scale_apar, stream_defect_iters
+
    private
+
+   ! The response matrix is calculated at the label wavenumbers akx, while the gyro-averages
+   ! and the field equations use the physical wavenumbers kx_phys. If <stream_defect_active>,
+   ! the implicit streaming step is iterated to the solution at the physical wavenumbers,
+   ! until the relative field residual is below <stream_defect_tol>. <stream_defect_method>:
+   !    'simple': fields += R_label^-1 residual
+   !    'gmres':  fields += R_phys^-1 residual by restarted GMRES, preconditioned with R_label^-1
+   !    'auto':   'simple', switching to 'gmres' after 8 iterations
+   ! The preconditioner is scaled pointwise by the ratio of the physical to the label field
+   ! denominators, <stream_defect_scale_phi> and <stream_defect_scale_apar>, if allocated.
+   logical :: stream_defect_active = .false.
+   real :: stream_defect_tol = 1.0e-10
+   integer :: stream_defect_maxit = 30
+   character(len=8) :: stream_defect_method = 'gmres'
+   real, dimension(:, :, :), allocatable :: stream_defect_scale_phi, stream_defect_scale_apar
+   integer :: stream_defect_iters = 0
+   real, parameter :: stream_defect_gmres_rtol = 1.0e-6
+   integer, parameter :: stream_defect_gmres_m = 30
 
 contains
 
@@ -281,6 +303,8 @@ contains
             !-------------------------------------------------------------------
             ! Flux tube routine:
             call update_pdf
+            ! Moving-wavevector flow shear: solve at the physical wavenumbers
+            if (stream_defect_active) call defect_correct_physical_metric
          end if
          
          itt = itt + 1
@@ -296,6 +320,246 @@ contains
       if (proc0) call time_message(.false., time_implicit_advance(:, 1), ' Stream advance')
 
    contains
+
+      !*************************************************************************
+      !        DEFECT CORRECTION TO THE PHYSICAL WAVENUMBERS                   !
+      !*************************************************************************
+      ! With g_k obtained by sweeping for the fields f_k, the implicit step at the
+      ! physical wavenumbers satisfies f = Fields_phys(g(f)). The residual
+      !    rho_k = Fields_phys(g_k) - f_k
+      ! is corrected with f_{k+1} = f_k + R^-1 rho_k, followed by a new sweep, where
+      ! R^-1 is either the (scaled) label response matrix or a GMRES solve with the
+      ! physical response. Stops if the iteration does not converge.
+      !*************************************************************************
+      subroutine defect_correct_physical_metric
+
+         use mp, only: mp_abort
+
+         complex, dimension(:, :, :, :), allocatable :: rphi, rapar, rbpar
+         real :: res, sphi, sapar
+         integer :: k
+         character(256) :: msg
+
+         if (include_bpar) call mp_abort('implicit streaming with the moving-k flow shear does not support bpar')
+         allocate (rphi(naky, nakx, -nzgrid:nzgrid, ntubes), rapar(naky, nakx, -nzgrid:nzgrid, ntubes), &
+            rbpar(naky, nakx, -nzgrid:nzgrid, ntubes))
+         do k = 0, stream_defect_maxit
+            fields_updated = .false.
+            call advance_fields(g, rphi, rapar, rbpar, dist='g')
+            fields_updated = .false.
+            rphi = rphi - phi
+            if (include_apar) then
+               rapar = rapar - apar
+            else
+               rapar = 0.0
+            end if
+            sphi = max(maxval(abs(phi)), tiny(1.0))
+            sapar = 1.0
+            if (include_apar) sapar = max(maxval(abs(apar)), tiny(1.0))
+            res = max(maxval(abs(rphi)) / sphi, maxval(abs(rapar)) / sapar)
+            stream_defect_iters = k
+            if (res <= stream_defect_tol) exit
+            if (k == stream_defect_maxit) then
+               write (msg, '(A,I0,A,ES12.4)') 'implicit streaming defect correction did not converge in ', &
+                  stream_defect_maxit, ' iterations, relative residual ', res
+               call mp_abort(trim(msg))
+            end if
+            if (trim(stream_defect_method) == 'gmres' .or. (trim(stream_defect_method) == 'auto' .and. k >= 8)) then
+               call gmres_rphys(rphi, rapar)
+            else
+               call apply_defect_scaling(rphi, rapar)
+               call invert_parstream_response(rphi, rapar, rbpar)
+            end if
+            phi = phi + rphi
+            phi_source = tupwnd_m * phi_old + tupwnd_p * phi
+            if (include_apar) then
+               apar = apar + rapar
+               apar_source = tupwnd_m * apar_old + tupwnd_p * apar
+            end if
+            call update_pdf
+         end do
+         fields_updated = .false.
+         deallocate (rphi, rapar, rbpar)
+
+      end subroutine defect_correct_physical_metric
+
+      !*************************************************************************
+      ! Solve R_phys d = b in place (b -> d) by right-preconditioned restarted GMRES
+      ! with the label response as preconditioner. The vectors are the (phi, apar)
+      ! fields, which are identical on every processor.
+      !*************************************************************************
+      subroutine gmres_rphys(bphi, bapar)
+
+         complex, dimension(:, :, -nzgrid:, :), intent(in out) :: bphi, bapar
+
+         complex, dimension(:, :), allocatable :: V, Z, H
+         complex, dimension(:), allocatable :: cs, sn, e, y, w, x, r
+         complex, dimension(:, :, :, :, :), allocatable :: gsave, g1save
+         complex, dimension(:, :, :, :), allocatable :: ps_save, as_save, an_save, ao_save
+         integer :: n1, nv, m, j, i, outer
+         real :: beta0, bnorm, rnorm
+         complex :: tmp
+
+         n1 = size(bphi)
+         nv = n1
+         if (include_apar) nv = 2 * n1
+         m = stream_defect_gmres_m
+         allocate (V(nv, m + 1), Z(nv, m), H(m + 1, m), cs(m), sn(m), e(m + 1), y(m), w(nv), x(nv), r(nv))
+
+         ! The operator is applied with homogeneous sweeps (g^n = 0, A^n = 0)
+         allocate (gsave, source=g)
+         allocate (g1save, source=g1)
+         allocate (ps_save, source=phi_source)
+         if (include_apar) then
+            allocate (as_save, source=apar_source)
+            allocate (an_save, source=apar)
+            allocate (ao_save, source=apar_old)
+            apar_old = 0.0
+         end if
+         g1 = 0.0
+
+         call gm_pack(bphi, bapar, r)
+         bnorm = sqrt(real(sum(conjg(r) * r)))
+         x = 0.0
+         do outer = 1, 20
+            if (outer > 1) then
+               call gm_matvec(x, w)
+               call gm_pack(bphi, bapar, r)
+               r = r - w
+            end if
+            beta0 = sqrt(real(sum(conjg(r) * r)))
+            if (beta0 <= stream_defect_gmres_rtol * bnorm .or. bnorm == 0.0) exit
+            V(:, 1) = r / beta0
+            e = 0.0
+            e(1) = beta0
+            do j = 1, m
+               call gm_precond(V(:, j), Z(:, j))
+               call gm_matvec(Z(:, j), w)
+               do i = 1, j
+                  H(i, j) = sum(conjg(V(:, i)) * w)
+                  w = w - H(i, j) * V(:, i)
+               end do
+               H(j + 1, j) = sqrt(real(sum(conjg(w) * w)))
+               if (abs(H(j + 1, j)) > 0.0) V(:, j + 1) = w / H(j + 1, j)
+               do i = 1, j - 1
+                  tmp = conjg(cs(i)) * H(i, j) + conjg(sn(i)) * H(i + 1, j)
+                  H(i + 1, j) = -sn(i) * H(i, j) + cs(i) * H(i + 1, j)
+                  H(i, j) = tmp
+               end do
+               call gm_givens(H(j, j), H(j + 1, j), cs(j), sn(j))
+               H(j, j) = conjg(cs(j)) * H(j, j) + conjg(sn(j)) * H(j + 1, j)
+               H(j + 1, j) = 0.0
+               e(j + 1) = -sn(j) * e(j)
+               e(j) = conjg(cs(j)) * e(j)
+               rnorm = abs(e(j + 1))
+               if (rnorm <= stream_defect_gmres_rtol * bnorm .or. j == m) exit
+            end do
+            do i = j, 1, -1
+               y(i) = (e(i) - sum(H(i, i + 1:j) * y(i + 1:j))) / H(i, i)
+            end do
+            do i = 1, j
+               x = x + y(i) * Z(:, i)
+            end do
+            if (rnorm <= stream_defect_gmres_rtol * bnorm) exit
+         end do
+         call gm_unpack(x, bphi, bapar)
+
+         ! Restore the sweep inputs and the current iterate
+         g = gsave
+         g1 = g1save
+         phi_source = ps_save
+         if (include_apar) then
+            apar_source = as_save
+            apar = an_save
+            apar_old = ao_save
+         end if
+         deallocate (V, Z, H, cs, sn, e, y, w, x, r, gsave, g1save, ps_save)
+         if (include_apar) deallocate (as_save, an_save, ao_save)
+
+      end subroutine gmres_rphys
+
+      subroutine gm_pack(fp, fa, v)
+         complex, dimension(:, :, -nzgrid:, :), intent(in) :: fp, fa
+         complex, dimension(:), intent(out) :: v
+         integer :: n1
+         n1 = size(fp)
+         v(1:n1) = reshape(fp, [n1])
+         if (include_apar) v(n1 + 1:2 * n1) = reshape(fa, [n1])
+      end subroutine gm_pack
+
+      subroutine gm_unpack(v, fp, fa)
+         complex, dimension(:), intent(in) :: v
+         complex, dimension(:, :, -nzgrid:, :), intent(out) :: fp, fa
+         integer :: n1
+         n1 = size(fp)
+         fp = reshape(v(1:n1), shape(fp))
+         if (include_apar) then
+            fa = reshape(v(n1 + 1:2 * n1), shape(fa))
+         else
+            fa = 0.0
+         end if
+      end subroutine gm_unpack
+
+      ! Preconditioner: the (scaled) label response matrix
+      subroutine gm_precond(vin, vout)
+         complex, dimension(:), intent(in) :: vin
+         complex, dimension(:), intent(out) :: vout
+         complex, dimension(:, :, :, :), allocatable :: tphi, tapar, tbpar
+         allocate (tphi(naky, nakx, -nzgrid:nzgrid, ntubes), tapar(naky, nakx, -nzgrid:nzgrid, ntubes), &
+            tbpar(naky, nakx, -nzgrid:nzgrid, ntubes))
+         call gm_unpack(vin, tphi, tapar)
+         tbpar = 0.0
+         call apply_defect_scaling(tphi, tapar)
+         call invert_parstream_response(tphi, tapar, tbpar)
+         call gm_pack(tphi, tapar, vout)
+         deallocate (tphi, tapar, tbpar)
+      end subroutine gm_precond
+
+      ! w = R_phys v = v - Fields_phys(sweep(v)), a homogeneous sweep with field sources only
+      subroutine gm_matvec(vin, vout)
+         complex, dimension(:), intent(in) :: vin
+         complex, dimension(:), intent(out) :: vout
+         complex, dimension(:, :, :, :), allocatable :: tphi, tapar, tbpar
+         allocate (tphi(naky, nakx, -nzgrid:nzgrid, ntubes), tapar(naky, nakx, -nzgrid:nzgrid, ntubes), &
+            tbpar(naky, nakx, -nzgrid:nzgrid, ntubes))
+         call gm_unpack(vin, tphi, tapar)
+         phi_source = tupwnd_p * tphi
+         if (include_apar) then
+            apar_source = tupwnd_p * tapar
+            apar = tapar
+         end if
+         call update_pdf
+         fields_updated = .false.
+         call advance_fields(g, tphi, tapar, tbpar, dist='g')
+         fields_updated = .false.
+         call gm_pack(tphi, tapar, vout)
+         vout = vin - vout
+         deallocate (tphi, tapar, tbpar)
+      end subroutine gm_matvec
+
+      subroutine apply_defect_scaling(fp, fa)
+         complex, dimension(:, :, -nzgrid:, :), intent(in out) :: fp, fa
+         integer :: it
+         if (.not. allocated(stream_defect_scale_phi)) return
+         do it = 1, size(fp, 4)
+            fp(:, :, :, it) = fp(:, :, :, it) * stream_defect_scale_phi
+            if (include_apar) fa(:, :, :, it) = fa(:, :, :, it) * stream_defect_scale_apar
+         end do
+      end subroutine apply_defect_scaling
+
+      subroutine gm_givens(a, b, c, s)
+         complex, intent(in) :: a, b
+         complex, intent(out) :: c, s
+         real :: t
+         t = sqrt(abs(a)**2 + abs(b)**2)
+         if (t == 0.0) then
+            c = 1.0
+            s = 0.0
+         else
+            c = a / t
+            s = b / t
+         end if
+      end subroutine gm_givens
 
       !*************************************************************************
       !   UPDATE THE DISTRIBUTION FUNCTION FOR EACH VELOCITY-SPACE POINT       !

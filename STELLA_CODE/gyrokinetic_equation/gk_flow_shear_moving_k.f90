@@ -29,8 +29,12 @@
 ! 
 ! The algorithm is restricted to local flux tubes with kinetic electrons, phi
 ! and A_parallel (no B_parallel), the explicit rk4 scheme and no collisions.
-! The mirror term can be treated implicitly, as a split after the explicit
-! step at the committed metric. All restrictions are checked at initialisation.
+! The mirror term and the parallel streaming can be treated implicitly, as a
+! split after the explicit step at the committed metric. The response matrix
+! of the implicit streaming is calculated at the label wavenumbers, and the
+! implicit step is iterated to the solution at the physical wavenumbers (defect
+! correction, see gk_implicit_terms). All restrictions are checked at
+! initialisation.
 !
 !###############################################################################
 module gk_flow_shear_moving_k
@@ -41,11 +45,17 @@ module gk_flow_shear_moving_k
    public :: init_flow_shear_moving_k
    public :: prepare_moving_k_stage
    public :: relabel_moving_k
+   public :: set_stream_defect_scaling
+   public :: rebuild_response_on_label_metric
 
    private
 
    ! Only initialise once
    logical :: initialised_moving_k = .false.
+
+   ! Field denominators at the label wavenumbers (phi: denominator_fields, apar: kperp2),
+   ! which the response matrix of the implicit streaming is calculated with
+   real, dimension(:, :, :), allocatable :: label_denominator, label_kperp2
 
 contains
 
@@ -58,7 +68,10 @@ contains
    subroutine init_flow_shear_moving_k
 
       use mp, only: mp_abort
-      use arrays, only: shift_state, denominator_fields, apar_denom
+      use arrays, only: shift_state, denominator_fields, apar_denom, kperp2
+      use gk_flow_shear, only: moving_k_stream_defect_tol, moving_k_stream_defect_maxit
+      use gk_flow_shear, only: moving_k_stream_defect_method
+      use gk_implicit_terms, only: stream_defect_tol, stream_defect_maxit, stream_defect_method
 
       implicit none
 
@@ -72,8 +85,20 @@ contains
       ! Field denominators of the original initialisation (label metric)
       allocate (initial_denominator, source=denominator_fields)
       allocate (initial_apar_denom, source=apar_denom)
+      allocate (label_denominator, source=denominator_fields)
+      allocate (label_kperp2, source=kperp2(:, :, 1, :))
 
       call check_moving_k_configuration
+
+      ! Defect correction of the implicit streaming
+      select case (trim(moving_k_stream_defect_method))
+      case ('simple', 'gmres', 'auto')
+         stream_defect_method = moving_k_stream_defect_method
+      case default
+         call mp_abort('moving_k_stream_defect_method should be simple, gmres or auto')
+      end select
+      stream_defect_tol = moving_k_stream_defect_tol
+      stream_defect_maxit = moving_k_stream_defect_maxit
       initialised_moving_k = .true.
       call prepare_moving_k_stage(0.0)
 
@@ -109,7 +134,7 @@ contains
       use parameters_physics, only: include_mirror, include_parallel_streaming
       use parameters_numerical, only: fully_explicit, fully_implicit, flip_flop
       use parameters_numerical, only: stream_implicit, mirror_implicit, drifts_implicit, driftkinetic_implicit
-      use parameters_numerical, only: explicit_algorithm_switch, explicit_algorithm_rk4
+      use parameters_numerical, only: explicit_algorithm_switch, explicit_algorithm_rk4, nitt
       use dissipation_and_collisions, only: include_collisions, hyper_dissipation
       use dissipation_hyper, only: D_hyper
       use gk_sources, only: source_option_switch, source_option_none, include_qn_source
@@ -150,7 +175,7 @@ contains
       if (trim(explicit_junction_sync) == 'none') &
          call mp_abort('moving-k flow shear requires explicit_junction_sync = step or stage')
       if (flow_shear_explicit_remap) call mp_abort('moving-k flow shear can not be combined with flow_shear_explicit_remap')
-      if (stream_implicit) call mp_abort('moving-k flow shear requires stream_implicit = F')
+      if (stream_implicit .and. nitt /= 1) call mp_abort('moving-k flow shear with implicit streaming requires nitt = 1')
 
       ! Physics
       if (include_parallel_nonlinearity) call mp_abort('moving-k flow shear does not support the parallel nonlinearity')
@@ -317,5 +342,75 @@ contains
       call prepare_moving_k_stage(0.0)
 
    end subroutine relabel_moving_k
+
+   !****************************************************************************
+   !                Scaling of the defect-correction preconditioner
+   !****************************************************************************
+   ! Ratio of the physical to the label field denominators at the committed
+   ! metric, for phi (denominator_fields) and apar (kperp2).
+   !****************************************************************************
+   subroutine set_stream_defect_scaling
+
+      use arrays, only: kperp2, denominator_fields
+      use gk_implicit_terms, only: stream_defect_scale_phi, stream_defect_scale_apar
+
+      implicit none
+
+      real, dimension(:, :, :), allocatable :: ref_denominator, ref_kperp2
+
+      !-------------------------------------------------------------------------
+
+      if (.not. allocated(stream_defect_scale_phi)) then
+         allocate (stream_defect_scale_phi, mold=label_denominator)
+         allocate (stream_defect_scale_apar, mold=label_denominator)
+      end if
+      allocate (ref_denominator, source=label_denominator)
+      allocate (ref_kperp2, source=label_kperp2)
+
+      where (abs(ref_denominator) > epsilon(0.0))
+         stream_defect_scale_phi = denominator_fields / ref_denominator
+      elsewhere
+         stream_defect_scale_phi = 1.0
+      end where
+      where (ref_kperp2 > epsilon(0.0))
+         stream_defect_scale_apar = kperp2(:, :, 1, :) / ref_kperp2
+      elsewhere
+         stream_defect_scale_apar = 1.0
+      end where
+
+      deallocate (ref_denominator, ref_kperp2)
+
+   end subroutine set_stream_defect_scaling
+
+   !****************************************************************************
+   !            Response matrix of the implicit streaming at the labels
+   !****************************************************************************
+   ! A change of the time step recalculates the response matrix with the current
+   ! kernels, which may belong to a Runge-Kutta stage. Recalculate it at the
+   ! label wavenumbers instead, as at initialisation. The caller restores the
+   ! committed metric afterwards.
+   !****************************************************************************
+   subroutine rebuild_response_on_label_metric
+
+      use arrays, only: kx_phys, shift_stage
+      use grids_kxky, only: naky, akx
+      use initialise_arrays, only: refresh_moving_kperp2
+      use arrays_gyro_averages, only: refresh_moving_bessel_functions
+      use field_equations, only: refresh_moving_two_field_response
+      use response_matrix, only: init_response_matrix, initialised_response_matrix
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      kx_phys = spread(akx, 1, naky)
+      shift_stage = 0.0
+      call refresh_moving_kperp2
+      call refresh_moving_bessel_functions
+      call refresh_moving_two_field_response
+      initialised_response_matrix = .false.
+      call init_response_matrix
+
+   end subroutine rebuild_response_on_label_metric
 
 end module gk_flow_shear_moving_k

@@ -10,6 +10,9 @@
 !     explicit_junction_sync = 'none'
 !     flow_shear_explicit_remap = .false.
 !     flow_shear_moving_k = .false.
+!     moving_k_stream_defect_tol = 1.0e-10
+!     moving_k_stream_defect_maxit = 30
+!     moving_k_stream_defect_method = 'gmres'
 !     g_exb = 0.0
 !     g_exbfac = 1.0
 !     omprimfac = 1.0
@@ -44,7 +47,8 @@ contains
    !                               FLOW SHEAR TERMS                            !
    !****************************************************************************
    subroutine read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
-      omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k)
+      omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k, &
+      moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method)
 
       use mp, only: proc0
 
@@ -55,6 +59,9 @@ contains
       character(len=8), intent(out) :: explicit_junction_sync
       logical, intent(out) :: flow_shear_explicit_remap
       logical, intent(out) :: flow_shear_moving_k
+      real, intent(out) :: moving_k_stream_defect_tol
+      integer, intent(out) :: moving_k_stream_defect_maxit
+      character(len=8), intent(out) :: moving_k_stream_defect_method
       real :: g_exb, g_exbfac, omprimfac
       
       !-------------------------------------------------------------------------
@@ -84,6 +91,12 @@ contains
          ! label akx and its physical kx moves as kx - g_exb*ky*t (moving wavevector)
          ! instead of being remapped by one radial grid spacing at a time.
          flow_shear_moving_k = .false.
+         ! Moving wavevector with implicit streaming: tolerance on the relative field residual,
+         ! maximum number of iterations and method ('simple', 'gmres' or 'auto') of the
+         ! defect correction to the physical wavenumbers
+         moving_k_stream_defect_tol = 1.0e-10
+         moving_k_stream_defect_maxit = 30
+         moving_k_stream_defect_method = 'gmres'
          g_exb = 0.0
          g_exbfac = 1.0
          omprimfac = 1.0
@@ -99,7 +112,10 @@ contains
          namelist /flow_shear/ prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, omprimfac, &
             explicit_junction_sync, &
             flow_shear_explicit_remap, &
-            flow_shear_moving_k
+            flow_shear_moving_k, &
+            moving_k_stream_defect_tol, &
+            moving_k_stream_defect_maxit, &
+            moving_k_stream_defect_method
          in_file = input_unit_exist('flow_shear', dexist)
          if (dexist) read (unit=in_file, nml=flow_shear)
 
@@ -120,6 +136,9 @@ contains
          write (unit, '(A, A, A)') '  explicit_junction_sync = "', trim(explicit_junction_sync), '"'
          write (unit, '(A, L1)') '  flow_shear_explicit_remap = ', flow_shear_explicit_remap
          write (unit, '(A, L1)') '  flow_shear_moving_k = ', flow_shear_moving_k
+         write (unit, '(A, ES0.4)') '  moving_k_stream_defect_tol = ', moving_k_stream_defect_tol
+         write (unit, '(A, I0)') '  moving_k_stream_defect_maxit = ', moving_k_stream_defect_maxit
+         write (unit, '(A, A, A)') '  moving_k_stream_defect_method = "', trim(moving_k_stream_defect_method), '"'
          write (unit, '(A, ES0.4)') '  g_exb = ', g_exb
          write (unit, '(A, ES0.4)') '  g_exbfac = ', g_exbfac
          write (unit, '(A, ES0.4)') '  omprimfac = ', omprimfac
