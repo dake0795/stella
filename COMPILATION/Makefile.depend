@@ -1040,6 +1040,7 @@ $(OBJ_DIR)/gyrokinetic_equation_explicit.o: \
 	 $(OBJ_DIR)/gk_ExB_nonlinearity.o \
 	 $(OBJ_DIR)/gk_drive.o \
 	 $(OBJ_DIR)/gk_flow_shear.o \
+	 $(OBJ_DIR)/gk_implicit_terms.o \
 	 $(OBJ_DIR)/gk_magnetic_drift.o \
 	 $(OBJ_DIR)/gk_mirror.o \
 	 $(OBJ_DIR)/gk_parallel_nonlinearity.o \
@@ -1052,6 +1053,7 @@ $(OBJ_DIR)/gyrokinetic_equation_explicit.o: \
 	 $(OBJ_DIR)/job_manage.o \
 	 $(OBJ_DIR)/mp.o \
 	 $(OBJ_DIR)/multibox.o \
+	 $(OBJ_DIR)/neoclassical_terms.o \
 	 $(OBJ_DIR)/parallelisation_layouts.o \
 	 $(OBJ_DIR)/parameters_multibox.o \
 	 $(OBJ_DIR)/parameters_numerical.o \

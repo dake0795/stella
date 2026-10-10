@@ -28,6 +28,10 @@ module gyrokinetic_equation_explicit
    ! (junction_sync_stage), see <explicit_junction_sync> in the flow_shear namelist
    logical :: junction_sync_step = .false., junction_sync_stage = .false.
 
+   ! Implicit mirror and parallel streaming applied as a split after the accepted
+   ! explicit step, instead of in the implicit time advance (see derive_implicit_split)
+   logical :: mirror_split = .false., stream_split = .false.
+
 contains
 
    !****************************************************************************
@@ -62,6 +66,7 @@ contains
       ! The flow-shear remap of the explicit time advance is only applied when
       ! the implicit solve, which also applies it, is never used
       if (flow_shear_explicit_remap) then
+         call derive_implicit_split
          call keep_fully_explicit_with_hyper_dissipation
          if (.not. fully_explicit) call mp_abort('flow_shear_explicit_remap requires a fully explicit simulation')
       end if
@@ -95,6 +100,57 @@ contains
       flip_flop = .false.
 
    end subroutine keep_fully_explicit_with_hyper_dissipation
+
+   !****************************************************************************
+   !               Implicit mirror and streaming as a split step
+   !****************************************************************************
+   ! The implicit time advance also holds the flow-shear remap. When the remap is
+   ! done by the explicit time advance, the implicit mirror and parallel streaming
+   ! are instead applied as a first-order (Lie) split after each accepted explicit
+   ! step, in the order of the implicit time advance without flip-flopping:
+   ! explicit step -> mirror -> parallel streaming. The implicit time advance is
+   ! then not used, so <fully_explicit> is set to true. Only the mirror and the
+   ! parallel streaming are supported as implicit terms.
+   !****************************************************************************
+   subroutine derive_implicit_split
+
+      use mp, only: proc0, mp_abort
+      use parameters_numerical, only: fully_explicit, fully_implicit, flip_flop
+      use parameters_numerical, only: stream_implicit, mirror_implicit, mirror_semi_lagrange
+      use parameters_numerical, only: drifts_implicit, driftkinetic_implicit, nitt
+      use parameters_numerical, only: explicit_algorithm_switch, explicit_algorithm_rk4
+      use parameters_physics, only: include_mirror, include_parallel_streaming
+      use parameters_physics, only: full_flux_surface, radial_variation
+      use dissipation_and_collisions, only: include_collisions, hyper_dissipation
+      use dissipation_hyper, only: D_hyper
+      use neoclassical_terms, only: include_neoclassical_terms
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      mirror_split = mirror_implicit .and. include_mirror
+      stream_split = stream_implicit .and. include_parallel_streaming
+      if (.not. (mirror_split .or. stream_split)) return
+
+      if (mirror_split .and. mirror_semi_lagrange) &
+         call mp_abort('the implicit mirror split requires mirror_semi_lagrange = .false.')
+      if (drifts_implicit .or. driftkinetic_implicit .or. fully_implicit) &
+         call mp_abort('only the mirror and the parallel streaming can be split from the explicit step')
+      if (stream_split .and. nitt /= 1) call mp_abort('the implicit streaming split requires nitt = 1')
+      if (flip_flop) call mp_abort('the implicit split requires flip_flop = .false.')
+      if (include_collisions) call mp_abort('the implicit split does not support collisions')
+      if (hyper_dissipation .and. abs(D_hyper) > 0.0) &
+         call mp_abort('the implicit split only supports parallel hyper-dissipation (D_hyper = 0)')
+      if (full_flux_surface .or. radial_variation .or. include_neoclassical_terms) &
+         call mp_abort('the implicit split requires a local flux tube without neoclassical terms')
+      if (explicit_algorithm_switch /= explicit_algorithm_rk4) &
+         call mp_abort('the implicit split requires explicit_algorithm = rk4')
+
+      fully_explicit = .true.
+      if (proc0) write (*, *) 'Implicit mirror and/or parallel streaming applied as a split after the explicit step.'
+
+   end subroutine derive_implicit_split
 
    !****************************************************************************
    !                       EXPLICIT TIME ADVANCE SUBROUTINES
@@ -227,10 +283,80 @@ contains
          call advance_fields(g, phi, apar, bpar, dist='g')
       end if
 
+      ! Implicit mirror and parallel streaming, split from the explicit step
+      if ((mirror_split .or. stream_split) .and. .not. restart_time_step) call advance_implicit_split(g)
+
       ! Stop the timer for the explicit part of the solve
       if (proc0) call time_message(.false., time_gke(:, 8), ' explicit')
 
    end subroutine advance_distribution_function_using_explicit_gyrokinetic_terms
+
+   !****************************************************************************
+   !                 IMPLICIT MIRROR AND STREAMING SPLIT STEP
+   !****************************************************************************
+   ! On entry <g> is the accepted state and the fields have been solved from it,
+   ! so the implicit mirror uses the stored <apar> to convert between g and gbar,
+   ! as in the implicit time advance.
+   !****************************************************************************
+   subroutine advance_implicit_split(g)
+
+      ! Parallelisation
+      use parallelisation_layouts, only: vmu_lo, iv_idx
+
+      ! Grids
+      use grids_z, only: nzgrid
+      use grids_kxky, only: naky
+      use grids_extended_zgrid, only: periodic, phase_shift
+      use gk_parallel_streaming, only: stream_sign
+
+      ! Fields
+      use arrays_fields, only: phi, apar, bpar
+      use field_equations, only: advance_fields, fields_updated
+
+      ! Implicit terms
+      use gk_mirror, only: advance_mirror_implicit
+      use gk_implicit_terms, only: advance_implicit_terms
+
+      implicit none
+
+      ! Arguments
+      complex, dimension(:, :, -nzgrid:, :, vmu_lo%llim_proc:), intent(in out) :: g
+
+      ! Local variables
+      integer :: iky, ivmu, iv, sgn
+
+      !-------------------------------------------------------------------------
+
+      if (mirror_split) then
+         call advance_mirror_implicit(.false., g, apar)
+
+         ! The mirror acts point-wise in (kx, ky, z), so restore the single-valued
+         ! junction points and the periodic end points
+         if (junction_sync_step) then
+            call synchronise_zgrid_junctions(g)
+         else
+            do iky = 1, naky
+               if (periodic(iky)) then
+                  do ivmu = vmu_lo%llim_proc, vmu_lo%ulim_proc
+                     iv = iv_idx(vmu_lo, ivmu)
+                     sgn = stream_sign(iv)
+                     g(iky, :, sgn * nzgrid, :, ivmu) = g(iky, :, -sgn * nzgrid, :, ivmu) * phase_shift(iky)**(-sgn)
+                  end do
+               end if
+            end do
+         end if
+         fields_updated = .false.
+         call advance_fields(g, phi, apar, bpar, dist='g')
+      end if
+
+      if (stream_split) then
+         call advance_fields(g, phi, apar, bpar, dist='g')
+         call advance_implicit_terms(g, phi, apar, bpar)
+         fields_updated = .false.
+         call advance_fields(g, phi, apar, bpar, dist='g')
+      end if
+
+   end subroutine advance_implicit_split
 
    !****************************************************************************
    !                 SYNCHRONISE TWIST-AND-SHIFT JUNCTION POINTS
