@@ -500,6 +500,7 @@
   g_exbfac = 1.0
   omprimfac = 1.0
   explicit_junction_sync = 'none'
+  flow_shear_explicit_remap = .false.
 /
 
 &sources

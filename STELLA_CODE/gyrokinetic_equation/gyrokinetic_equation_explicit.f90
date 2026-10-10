@@ -37,6 +37,8 @@ contains
 
       use mp, only: mp_abort
       use gk_flow_shear, only: explicit_junction_sync
+      use gk_flow_shear, only: flow_shear_explicit_remap
+      use parameters_numerical, only: fully_explicit
 
       implicit none
 
@@ -57,7 +59,42 @@ contains
          call mp_abort('explicit_junction_sync should be none, step or stage')
       end select
 
+      ! The flow-shear remap of the explicit time advance is only applied when
+      ! the implicit solve, which also applies it, is never used
+      if (flow_shear_explicit_remap) then
+         call keep_fully_explicit_with_hyper_dissipation
+         if (.not. fully_explicit) call mp_abort('flow_shear_explicit_remap requires a fully explicit simulation')
+      end if
+
    end subroutine init_gyrokinetic_equation_explicit
+
+   !****************************************************************************
+   !            Fully explicit simulations with parallel hyper-dissipation
+   !****************************************************************************
+   ! Setting <hyper_dissipation> = .true. switches off <fully_explicit>, because
+   ! the perpendicular hyper-dissipation (D_hyper) is applied in the implicit
+   ! solve. If D_hyper = 0 and no other term is treated implicitly, the only
+   ! active hyper-dissipation is the parallel one (hyp_zed, hyp_vpa), which is
+   ! part of the explicit right-hand side, so the simulation is fully explicit.
+   !****************************************************************************
+   subroutine keep_fully_explicit_with_hyper_dissipation
+
+      use parameters_numerical, only: fully_explicit, fully_implicit, flip_flop
+      use parameters_numerical, only: stream_implicit, mirror_implicit
+      use parameters_numerical, only: drifts_implicit, driftkinetic_implicit
+      use dissipation_and_collisions, only: hyper_dissipation
+      use dissipation_hyper, only: D_hyper
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      if (fully_explicit .or. .not. hyper_dissipation .or. abs(D_hyper) > 0.0) return
+      if (stream_implicit .or. mirror_implicit .or. drifts_implicit .or. driftkinetic_implicit .or. fully_implicit) return
+      fully_explicit = .true.
+      flip_flop = .false.
+
+   end subroutine keep_fully_explicit_with_hyper_dissipation
 
    !****************************************************************************
    !                       EXPLICIT TIME ADVANCE SUBROUTINES
@@ -78,6 +115,11 @@ contains
       use parameters_physics, only: include_apar
       use arrays_fields, only: phi, apar, bpar
       use field_equations, only: advance_fields, fields_updated
+
+      ! Flow shear
+      use parameters_numerical, only: fully_explicit
+      use gk_flow_shear, only: prp_shear_enabled, flow_shear_explicit_remap
+      use gk_flow_shear, only: advance_perp_flow_shear
       
       ! Grids
       use grids_z, only: nzgrid
@@ -171,6 +213,16 @@ contains
       ! The fields above were solved before the periodic end points were copied;
       ! solve them again so that they are consistent with the final <g>
       if (junction_sync_step) then
+         fields_updated = .false.
+         call advance_fields(g, phi, apar, bpar, dist='g')
+      end if
+
+      ! Remap the perpendicular flow shear in fully explicit simulations. The remap
+      ! vacates the edge label of the shifted modes, which changes the pairing at
+      ! the ends of the linked chains, so the junction points are synchronised again.
+      if (flow_shear_explicit_remap .and. fully_explicit .and. prp_shear_enabled .and. .not. restart_time_step) then
+         call advance_perp_flow_shear(g)
+         if (junction_sync_step) call synchronise_zgrid_junctions(g)
          fields_updated = .false.
          call advance_fields(g, phi, apar, bpar, dist='g')
       end if
