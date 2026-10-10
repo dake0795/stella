@@ -41,6 +41,7 @@ module response_matrix
    ! Load libraries
    use mpi
    use netcdf
+   use common_types, only: response_matrix_type
 #ifdef ISO_C_BINDING
    use, intrinsic :: iso_c_binding, only: c_intptr_t
 #endif
@@ -58,6 +59,11 @@ module response_matrix
    ! Only initialise once
    public :: initialised_response_matrix
 
+   ! Additional sets of response matrices (moving-wavevector flow shear)
+   public :: response_set_type
+   public :: save_response_set, install_response_rows
+   public :: build_new_response_set, rebuild_response_set
+
    private
 
    ! Local variables
@@ -67,6 +73,15 @@ module response_matrix
    
    ! Only initialise once
    logical :: initialised_response_matrix = .false.
+
+   ! Only the rows iky = 1, ..., response_build_iky_max are constructed
+   integer :: response_build_iky_max = huge(1)
+
+   ! A set of response matrices, each in its own shared-memory window
+   type :: response_set_type
+      type(response_matrix_type), dimension(:), allocatable :: row
+      integer :: win = MPI_WIN_NULL
+   end type response_set_type
 
 contains
 
@@ -274,7 +289,7 @@ contains
          if (sgproc0) then
          
             ! We need to allocate memory for each eigenmode
-            do iky = 1, naky
+            do iky = 1, min(naky, response_build_iky_max)
                do ie = 1, neigen(iky)
                
                   ! Total data points required for the eigenmmode = fields * z-points
@@ -388,7 +403,7 @@ contains
       ! ------------------------------------------------------------------------
       
       ! Loop over all ky modes, as these are all independent of one another.
-      do iky = 1, naky
+      do iky = 1, min(naky, response_build_iky_max)
 
          ! Write the ky-value to the output file
          if (proc0 .and. mat_gen) then
@@ -2549,6 +2564,135 @@ contains
       end if
    end subroutine read_response_matrix
 
+
+!###############################################################################
+!############################ SETS OF RESPONSE MATRICES ########################
+!###############################################################################
+! The moving-wavevector flow shear can keep several response matrices, built at
+! different radial wavenumbers, and install the most suitable one per ky row by
+! pointer assignment. Each set has its own shared-memory window.
+!###############################################################################
+
+   !****************************************************************************
+   !               Store pointers to the active response matrix
+   !****************************************************************************
+   subroutine save_response_set(set)
+
+      use arrays, only: response_matrix
+#ifdef ISO_C_BINDING
+      use arrays, only: response_window
+#endif
+      use grids_kxky, only: naky
+
+      implicit none
+
+      type(response_set_type), intent(in out) :: set
+      integer :: iky
+
+      !-------------------------------------------------------------------------
+
+      if (.not. allocated(set%row)) allocate (set%row(naky))
+      do iky = 1, naky
+         set%row(iky)%eigen => response_matrix(iky)%eigen
+      end do
+#ifdef ISO_C_BINDING
+      set%win = response_window
+#endif
+
+   end subroutine save_response_set
+
+   !****************************************************************************
+   !        Make rows iky_lo, ..., iky_hi of a set the active response
+   !****************************************************************************
+   subroutine install_response_rows(set, iky_lo, iky_hi, with_window)
+
+      use arrays, only: response_matrix
+#ifdef ISO_C_BINDING
+      use arrays, only: response_window
+#endif
+
+      implicit none
+
+      type(response_set_type), intent(in) :: set
+      integer, intent(in) :: iky_lo, iky_hi
+      logical, intent(in) :: with_window
+      integer :: iky
+
+      !-------------------------------------------------------------------------
+
+      do iky = iky_lo, iky_hi
+         response_matrix(iky)%eigen => set%row(iky)%eigen
+      end do
+#ifdef ISO_C_BINDING
+      if (with_window) response_window = set%win
+#endif
+
+   end subroutine install_response_rows
+
+   !****************************************************************************
+   !  Build rows 1, ..., iky_max in a new set with the current kernels
+   !****************************************************************************
+   ! The active response matrix (pointers and window) is restored afterwards.
+   !****************************************************************************
+   subroutine build_new_response_set(set, iky_max)
+
+      use arrays, only: response_matrix
+#ifdef ISO_C_BINDING
+      use arrays, only: response_window
+#endif
+      use grids_kxky, only: naky
+
+      implicit none
+
+      type(response_set_type), intent(in out) :: set
+      integer, intent(in) :: iky_max
+      type(response_set_type) :: active
+      integer :: iky
+
+      !-------------------------------------------------------------------------
+
+      call save_response_set(active)
+      do iky = 1, naky
+         nullify (response_matrix(iky)%eigen)
+      end do
+#ifdef ISO_C_BINDING
+      response_window = MPI_WIN_NULL
+#endif
+      response_build_iky_max = iky_max
+      initialised_response_matrix = .false.
+      call init_response_matrix
+      call save_response_set(set)
+      response_build_iky_max = huge(1)
+      call install_response_rows(active, 1, naky, .true.)
+      initialised_response_matrix = .true.
+
+   end subroutine build_new_response_set
+
+   !****************************************************************************
+   !  Recalculate rows 1, ..., iky_max of an existing set with the current kernels
+   !****************************************************************************
+   subroutine rebuild_response_set(set, iky_max)
+
+      use grids_kxky, only: naky
+
+      implicit none
+
+      type(response_set_type), intent(in out) :: set
+      integer, intent(in) :: iky_max
+      type(response_set_type) :: active
+
+      !-------------------------------------------------------------------------
+
+      call save_response_set(active)
+      call install_response_rows(set, 1, min(iky_max, naky), .true.)
+      response_build_iky_max = iky_max
+      initialised_response_matrix = .false.
+      call init_response_matrix
+      response_build_iky_max = huge(1)
+      call install_response_rows(active, 1, naky, .true.)
+      initialised_response_matrix = .true.
+
+   end subroutine rebuild_response_set
 
 !###############################################################################
 !############################# FINISH RESPONSE MATRIX ##########################

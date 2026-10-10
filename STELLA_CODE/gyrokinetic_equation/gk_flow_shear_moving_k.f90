@@ -33,11 +33,14 @@
 ! split after the explicit step at the committed metric. The response matrix
 ! of the implicit streaming is calculated at the label wavenumbers, and the
 ! implicit step is iterated to the solution at the physical wavenumbers (defect
-! correction, see gk_implicit_terms). All restrictions are checked at
-! initialisation.
+! correction, see gk_implicit_terms). Optionally, additional response matrices
+! at sub-cell phases of the low-ky rows are used as better preconditioners.
+! All restrictions are checked at initialisation.
 !
 !###############################################################################
 module gk_flow_shear_moving_k
+
+   use response_matrix, only: response_set_type
 
    implicit none
 
@@ -45,7 +48,7 @@ module gk_flow_shear_moving_k
    public :: init_flow_shear_moving_k
    public :: prepare_moving_k_stage
    public :: relabel_moving_k
-   public :: set_stream_defect_scaling
+   public :: prepare_moving_k_stream_solve
    public :: rebuild_response_on_label_metric
 
    private
@@ -56,6 +59,16 @@ module gk_flow_shear_moving_k
    ! Field denominators at the label wavenumbers (phi: denominator_fields, apar: kperp2),
    ! which the response matrix of the implicit streaming is calculated with
    real, dimension(:, :, :), allocatable :: label_denominator, label_kperp2
+
+   ! Additional streaming response matrices at the sub-cell phases tau = m T/M,
+   ! m = -M/2, ..., M/2, for the rows iky = 2, ..., set_iky_max (m = 0 is the
+   ! label set), with their field denominators; set_installed(iky) is the set in use
+   logical :: sets_built = .false.
+   integer :: nsets = 0, set_iky_max = 1
+   integer, dimension(:), allocatable :: set_installed
+   real, dimension(:, :, :, :), allocatable :: set_denominator, set_kperp2
+   type(response_set_type) :: label_set
+   type(response_set_type), dimension(:), allocatable :: offset_set
 
 contains
 
@@ -344,6 +357,25 @@ contains
    end subroutine relabel_moving_k
 
    !****************************************************************************
+   !             Preconditioner of the implicit streaming solve
+   !****************************************************************************
+   ! Install, for each low-ky row, the response set nearest to its committed
+   ! phase (if additional sets are used), and set the preconditioner scaling.
+   !****************************************************************************
+   subroutine prepare_moving_k_stream_solve
+
+      use gk_flow_shear, only: g_exb, g_exbfac, moving_k_stream_offset_sets
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      if (moving_k_stream_offset_sets > 0 .and. abs(g_exb * g_exbfac) > epsilon(0.)) call select_response_sets
+      call set_stream_defect_scaling
+
+   end subroutine prepare_moving_k_stream_solve
+
+   !****************************************************************************
    !                Scaling of the defect-correction preconditioner
    !****************************************************************************
    ! Ratio of the physical to the label field denominators at the committed
@@ -357,6 +389,7 @@ contains
       implicit none
 
       real, dimension(:, :, :), allocatable :: ref_denominator, ref_kperp2
+      integer :: iky
 
       !-------------------------------------------------------------------------
 
@@ -366,6 +399,16 @@ contains
       end if
       allocate (ref_denominator, source=label_denominator)
       allocate (ref_kperp2, source=label_kperp2)
+
+      ! Rows solved with an additional response set use the denominators of that set
+      if (sets_built) then
+         do iky = 1, size(ref_denominator, 1)
+            if (set_installed(iky) /= 0) then
+               ref_denominator(iky, :, :) = set_denominator(iky, :, :, set_installed(iky))
+               ref_kperp2(iky, :, :) = set_kperp2(iky, :, :, set_installed(iky))
+            end if
+         end do
+      end if
 
       where (abs(ref_denominator) > epsilon(0.0))
          stream_defect_scale_phi = denominator_fields / ref_denominator
@@ -398,10 +441,18 @@ contains
       use arrays_gyro_averages, only: refresh_moving_bessel_functions
       use field_equations, only: refresh_moving_two_field_response
       use response_matrix, only: init_response_matrix, initialised_response_matrix
+      use response_matrix, only: install_response_rows
+      use gk_flow_shear, only: moving_k_stream_offset_keep_on_dt_change
 
       implicit none
 
       !-------------------------------------------------------------------------
+
+      ! The active low-ky rows may belong to an additional set
+      if (sets_built) then
+         call install_response_rows(label_set, 1, naky, .true.)
+         set_installed = 0
+      end if
 
       kx_phys = spread(akx, 1, naky)
       shift_stage = 0.0
@@ -411,6 +462,117 @@ contains
       initialised_response_matrix = .false.
       call init_response_matrix
 
+      ! The additional sets depend on the time step as well. If they are kept, they
+      ! are only used as preconditioners, so the converged solution is unchanged.
+      if (sets_built .and. .not. moving_k_stream_offset_keep_on_dt_change) call build_response_sets
+
    end subroutine rebuild_response_on_label_metric
+
+   !****************************************************************************
+   !        Streaming response matrices at sub-cell phases of the low-ky rows
+   !****************************************************************************
+   ! Each set is calculated with the standard construction, at the metric of the
+   ! phase tau = m T_ky/M of every row, and stored in its own shared-memory
+   ! window. The sets are built at the first use and recalculated in place.
+   !****************************************************************************
+   subroutine build_response_sets
+
+      use mp, only: proc0, mp_abort
+      use mpi, only: mpi_wtime
+      use arrays, only: kx_phys, shift_stage, kperp2, denominator_fields
+      use grids_kxky, only: naky, akx, aky
+      use gk_flow_shear, only: g_exb, g_exbfac, shift_times
+      use gk_flow_shear, only: moving_k_stream_offset_sets, moving_k_stream_offset_rows
+      use initialise_arrays, only: refresh_moving_kperp2
+      use arrays_gyro_averages, only: refresh_moving_bessel_functions
+      use field_equations, only: refresh_moving_two_field_response
+      use response_matrix, only: save_response_set, build_new_response_set, rebuild_response_set
+
+      implicit none
+
+      integer :: m, iky
+      double precision :: start_time
+      logical :: first
+
+      !-------------------------------------------------------------------------
+
+      first = .not. sets_built
+      nsets = moving_k_stream_offset_sets
+      if (mod(nsets, 2) /= 0 .or. nsets < 0) call mp_abort('moving_k_stream_offset_sets should be even and >= 0')
+      set_iky_max = min(naky, moving_k_stream_offset_rows + 1)
+      start_time = mpi_wtime()
+
+      if (first) then
+         call save_response_set(label_set)
+         allocate (offset_set(-nsets / 2:nsets / 2))
+         allocate (set_denominator(size(label_denominator, 1), size(label_denominator, 2), &
+            size(label_denominator, 3), -nsets / 2:nsets / 2))
+         allocate (set_kperp2, mold=set_denominator)
+         allocate (set_installed(naky))
+         set_installed = 0
+      end if
+
+      do m = -nsets / 2, nsets / 2
+         if (m == 0) cycle
+         do iky = 1, naky
+            if (aky(iky) == 0.0) then
+               kx_phys(iky, :) = akx
+            else
+               kx_phys(iky, :) = akx - g_exb * g_exbfac * aky(iky) * (real(m) / real(nsets)) * shift_times(iky)
+            end if
+         end do
+         shift_stage = 0.0
+         call refresh_moving_kperp2
+         call refresh_moving_bessel_functions
+         call refresh_moving_two_field_response
+         set_denominator(:, :, :, m) = denominator_fields
+         set_kperp2(:, :, :, m) = kperp2(:, :, 1, :)
+         if (first) then
+            call build_new_response_set(offset_set(m), set_iky_max)
+         else
+            call rebuild_response_set(offset_set(m), set_iky_max)
+         end if
+      end do
+      set_denominator(:, :, :, 0) = label_denominator
+      set_kperp2(:, :, :, 0) = label_kperp2
+      sets_built = .true.
+
+      ! Restore the metric of the committed state
+      call prepare_moving_k_stage(0.0)
+
+      if (proc0) write (*, '(A,I0,A,I0,A,F10.2,A)') ' Moving-k flow shear: built ', nsets, &
+         ' additional streaming response sets for ky rows 2 to ', set_iky_max, ' in ', mpi_wtime() - start_time, ' s'
+
+   end subroutine build_response_sets
+
+   !****************************************************************************
+   !        Install, per low-ky row, the set nearest to its committed phase
+   !****************************************************************************
+   subroutine select_response_sets
+
+      use arrays, only: shift_state
+      use gk_flow_shear, only: shift_times
+      use response_matrix, only: install_response_rows
+
+      implicit none
+
+      integer :: iky, m
+
+      !-------------------------------------------------------------------------
+
+      if (.not. sets_built) call build_response_sets
+      do iky = 2, set_iky_max
+         m = nint(shift_state(iky) / shift_times(iky) * real(nsets))
+         m = max(-nsets / 2, min(nsets / 2, m))
+         if (m == set_installed(iky)) cycle
+         if (m == 0) then
+            call install_response_rows(label_set, iky, iky, .false.)
+         else
+            call install_response_rows(offset_set(m), iky, iky, .false.)
+         end if
+         set_installed(iky) = m
+      end do
+
+   end subroutine select_response_sets
 
 end module gk_flow_shear_moving_k

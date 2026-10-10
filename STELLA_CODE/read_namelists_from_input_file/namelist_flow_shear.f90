@@ -13,6 +13,9 @@
 !     moving_k_stream_defect_tol = 1.0e-10
 !     moving_k_stream_defect_maxit = 30
 !     moving_k_stream_defect_method = 'gmres'
+!     moving_k_stream_offset_sets = 0
+!     moving_k_stream_offset_rows = 3
+!     moving_k_stream_offset_keep_on_dt_change = .false.
 !     g_exb = 0.0
 !     g_exbfac = 1.0
 !     omprimfac = 1.0
@@ -48,7 +51,9 @@ contains
    !****************************************************************************
    subroutine read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
       omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k, &
-      moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method)
+      moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method, &
+      moving_k_stream_offset_sets, moving_k_stream_offset_rows, &
+      moving_k_stream_offset_keep_on_dt_change)
 
       use mp, only: proc0
 
@@ -62,6 +67,9 @@ contains
       real, intent(out) :: moving_k_stream_defect_tol
       integer, intent(out) :: moving_k_stream_defect_maxit
       character(len=8), intent(out) :: moving_k_stream_defect_method
+      integer, intent(out) :: moving_k_stream_offset_sets
+      integer, intent(out) :: moving_k_stream_offset_rows
+      logical, intent(out) :: moving_k_stream_offset_keep_on_dt_change
       real :: g_exb, g_exbfac, omprimfac
       
       !-------------------------------------------------------------------------
@@ -97,6 +105,14 @@ contains
          moving_k_stream_defect_tol = 1.0e-10
          moving_k_stream_defect_maxit = 30
          moving_k_stream_defect_method = 'gmres'
+         ! Moving wavevector with implicit streaming: number M (even) of additional response
+         ! matrix sets at the sub-cell phases tau = m T/M, |m| <= M/2, for the lowest
+         ! moving_k_stream_offset_rows non-zonal ky rows; the set nearest to the phase of a
+         ! row is used as the preconditioner. If moving_k_stream_offset_keep_on_dt_change,
+         ! the sets are kept when the time step changes, otherwise they are recalculated.
+         moving_k_stream_offset_sets = 0
+         moving_k_stream_offset_rows = 3
+         moving_k_stream_offset_keep_on_dt_change = .false.
          g_exb = 0.0
          g_exbfac = 1.0
          omprimfac = 1.0
@@ -115,7 +131,10 @@ contains
             flow_shear_moving_k, &
             moving_k_stream_defect_tol, &
             moving_k_stream_defect_maxit, &
-            moving_k_stream_defect_method
+            moving_k_stream_defect_method, &
+            moving_k_stream_offset_sets, &
+            moving_k_stream_offset_rows, &
+            moving_k_stream_offset_keep_on_dt_change
          in_file = input_unit_exist('flow_shear', dexist)
          if (dexist) read (unit=in_file, nml=flow_shear)
 
@@ -139,6 +158,9 @@ contains
          write (unit, '(A, ES0.4)') '  moving_k_stream_defect_tol = ', moving_k_stream_defect_tol
          write (unit, '(A, I0)') '  moving_k_stream_defect_maxit = ', moving_k_stream_defect_maxit
          write (unit, '(A, A, A)') '  moving_k_stream_defect_method = "', trim(moving_k_stream_defect_method), '"'
+         write (unit, '(A, I0)') '  moving_k_stream_offset_sets = ', moving_k_stream_offset_sets
+         write (unit, '(A, I0)') '  moving_k_stream_offset_rows = ', moving_k_stream_offset_rows
+         write (unit, '(A, L1)') '  moving_k_stream_offset_keep_on_dt_change = ', moving_k_stream_offset_keep_on_dt_change
          write (unit, '(A, ES0.4)') '  g_exb = ', g_exb
          write (unit, '(A, ES0.4)') '  g_exbfac = ', g_exbfac
          write (unit, '(A, ES0.4)') '  omprimfac = ', omprimfac

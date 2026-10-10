@@ -505,6 +505,9 @@
   moving_k_stream_defect_tol = 1.0e-10
   moving_k_stream_defect_maxit = 30
   moving_k_stream_defect_method = 'gmres'
+  moving_k_stream_offset_sets = 0
+  moving_k_stream_offset_rows = 3
+  moving_k_stream_offset_keep_on_dt_change = .false.
 /
 
 &sources

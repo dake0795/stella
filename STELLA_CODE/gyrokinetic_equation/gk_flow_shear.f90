@@ -57,6 +57,9 @@ module gk_flow_shear
    public :: prp_shear_enabled               ! Enables perpendicular flow shear
    public :: hammett_flow_shear
    public :: g_exb, g_exbfac, omprimfac 
+   public :: moving_k_stream_offset_keep_on_dt_change
+   public :: moving_k_stream_offset_rows
+   public :: moving_k_stream_offset_sets
    public :: moving_k_stream_defect_method
    public :: moving_k_stream_defect_maxit
    public :: moving_k_stream_defect_tol
@@ -78,6 +81,9 @@ module gk_flow_shear
    real :: moving_k_stream_defect_tol
    integer :: moving_k_stream_defect_maxit
    character(len=8) :: moving_k_stream_defect_method
+   integer :: moving_k_stream_offset_sets
+   integer :: moving_k_stream_offset_rows
+   logical :: moving_k_stream_offset_keep_on_dt_change
    real :: g_exb, g_exbfac, omprimfac
    
    ! Parallel flow shear
@@ -108,7 +114,9 @@ contains
       ! Read the "flow_shear" namelist in the input file
       call read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
          omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k, &
-         moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method)
+         moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method, &
+         moving_k_stream_offset_sets, moving_k_stream_offset_rows, &
+         moving_k_stream_offset_keep_on_dt_change)
       
       ! Broadcast the input parameters
       call broadcast(prp_shear_enabled)
@@ -119,6 +127,9 @@ contains
       call broadcast(moving_k_stream_defect_tol)
       call broadcast(moving_k_stream_defect_maxit)
       call broadcast(moving_k_stream_defect_method)
+      call broadcast(moving_k_stream_offset_sets)
+      call broadcast(moving_k_stream_offset_rows)
+      call broadcast(moving_k_stream_offset_keep_on_dt_change)
       call broadcast(g_exb)
       call broadcast(g_exbfac)
       call broadcast(omprimfac)

@@ -338,7 +338,7 @@ contains
 
       ! Moving-wavevector flow shear
       use arrays, only: flow_shear_moving_k
-      use gk_flow_shear_moving_k, only: set_stream_defect_scaling
+      use gk_flow_shear_moving_k, only: prepare_moving_k_stream_solve
 
       implicit none
 
@@ -377,7 +377,7 @@ contains
       if (stream_split) then
          call advance_fields(g, phi, apar, bpar, dist='g')
          ! Moving-wavevector flow shear: iterate to the solution at the physical wavenumbers
-         if (flow_shear_moving_k) call set_stream_defect_scaling
+         if (flow_shear_moving_k) call prepare_moving_k_stream_solve
          stream_defect_active = flow_shear_moving_k
          call advance_implicit_terms(g, phi, apar, bpar)
          stream_defect_active = .false.
