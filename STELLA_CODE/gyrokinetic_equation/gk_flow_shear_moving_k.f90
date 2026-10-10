@@ -29,7 +29,8 @@
 ! 
 ! The algorithm is restricted to local flux tubes with kinetic electrons, phi
 ! and A_parallel (no B_parallel), the explicit rk4 scheme and no collisions.
-! All restrictions are checked at initialisation.
+! The mirror term can be treated implicitly, as a split after the explicit
+! step at the committed metric. All restrictions are checked at initialisation.
 !
 !###############################################################################
 module gk_flow_shear_moving_k
@@ -149,7 +150,6 @@ contains
       if (trim(explicit_junction_sync) == 'none') &
          call mp_abort('moving-k flow shear requires explicit_junction_sync = step or stage')
       if (flow_shear_explicit_remap) call mp_abort('moving-k flow shear can not be combined with flow_shear_explicit_remap')
-      if (mirror_implicit) call mp_abort('moving-k flow shear requires mirror_implicit = F')
       if (stream_implicit) call mp_abort('moving-k flow shear requires stream_implicit = F')
 
       ! Physics

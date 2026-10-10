@@ -868,6 +868,7 @@ $(OBJ_DIR)/gk_magnetic_drift.o: \
 	 $(OBJ_DIR)/parameters_physics.o \
 	 $(OBJ_DIR)/timers.o 
 $(OBJ_DIR)/gk_mirror.o: \
+	 $(OBJ_DIR)/arrays.o \
 	 $(OBJ_DIR)/arrays_distribution_function.o \
 	 $(OBJ_DIR)/calculations_finite_differences.o \
 	 $(OBJ_DIR)/calculations_gyro_averages.o \

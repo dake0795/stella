@@ -331,7 +331,7 @@ contains
       use field_equations, only: advance_fields, fields_updated
 
       ! Implicit terms
-      use gk_mirror, only: advance_mirror_implicit
+      use gk_mirror, only: advance_mirror_implicit, refresh_mirror_response_for_metric
       use gk_implicit_terms, only: advance_implicit_terms
 
       implicit none
@@ -345,6 +345,8 @@ contains
       !-------------------------------------------------------------------------
 
       if (mirror_split) then
+         ! Moving-wavevector flow shear: electromagnetic response at the committed metric
+         call refresh_mirror_response_for_metric
          call advance_mirror_implicit(.false., g, apar)
 
          ! The mirror acts point-wise in (kx, ky, z), so restore the single-valued

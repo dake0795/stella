@@ -22,6 +22,7 @@ module gk_mirror
    public :: mirror
    public :: advance_mirror_explicit, advance_mirror_implicit
    public :: add_mirror_radial_variation
+   public :: refresh_mirror_response_for_metric
 
    private
 
@@ -33,6 +34,10 @@ module gk_mirror
    real, dimension(:, :, :, :), allocatable :: mirror_interp_loc
    integer, dimension(:, :, :, :), allocatable :: mirror_interp_idx_shift
    complex, dimension(:, :, :, :), allocatable :: response_apar_denom
+   
+   ! Physical kx at which <response_apar_denom> was calculated; it depends on kx
+   ! through J0 and kperp2 (moving-wavevector flow shear)
+   real, dimension(:, :), allocatable :: response_kx
    
    ! Only initialise once
    logical :: initialised_mirror = .false.
@@ -330,7 +335,8 @@ contains
       use parallelisation_layouts, only: kxkyz_lo
       use grids_z, only: nzgrid, ntubes
       use grids_velocity, only: nmu, nvpa
-      use grids_kxky, only: naky, nakx
+      use grids_kxky, only: naky, nakx, akx
+      use arrays, only: flow_shear_moving_k, kx_phys
       use field_equations_electromagnetic, only: advance_apar
 
       implicit none
@@ -373,7 +379,41 @@ contains
 
       deallocate (rhs, mirror_response_g)
 
+      ! Remember the radial wavenumbers this response belongs to
+      if (.not. allocated(response_kx)) allocate (response_kx(naky, nakx))
+      if (flow_shear_moving_k .and. allocated(kx_phys)) then
+         response_kx = kx_phys
+      else
+         response_kx = spread(akx, 1, naky)
+      end if
+
    end subroutine init_mirror_response
+
+   !****************************************************************************
+   !        Electromagnetic mirror response for the current wavenumbers
+   !****************************************************************************
+   ! The tridiagonal mirror operator does not depend on kx, but the A_parallel
+   ! response does. For the moving-wavevector flow shear, recalculate the
+   ! response if the physical wavenumbers changed since it was calculated.
+   !****************************************************************************
+   subroutine refresh_mirror_response_for_metric
+
+      use arrays, only: flow_shear_moving_k, kx_phys
+      use parameters_physics, only: include_apar, include_mirror
+      use parameters_numerical, only: mirror_implicit, mirror_semi_lagrange
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      if (.not. (flow_shear_moving_k .and. include_apar .and. include_mirror .and. mirror_implicit)) return
+      if (mirror_semi_lagrange .or. .not. allocated(kx_phys)) return
+      if (allocated(response_kx)) then
+         if (all(response_kx == kx_phys)) return
+      end if
+      call init_mirror_response
+
+   end subroutine refresh_mirror_response_for_metric
 
    !****************************************************************************
    !                           EXPLICIT MIRROR ADVANCE
@@ -1291,6 +1331,7 @@ contains
       implicit none
 
       if (allocated(response_apar_denom)) deallocate (response_apar_denom)
+      if (allocated(response_kx)) deallocate (response_kx)
 
    end subroutine finish_mirror_response
 
