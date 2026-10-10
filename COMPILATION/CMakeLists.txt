@@ -99,6 +99,7 @@ set(STELLA_SOURCES_f90
   ../STELLA_CODE/gyrokinetic_equation/gk_drive.f90
   ../STELLA_CODE/gyrokinetic_equation/gk_ffs_solve.f90
   ../STELLA_CODE/gyrokinetic_equation/gk_flow_shear.f90
+  ../STELLA_CODE/gyrokinetic_equation/gk_flow_shear_moving_k.f90
   ../STELLA_CODE/gyrokinetic_equation/gk_implicit_terms.f90
   ../STELLA_CODE/gyrokinetic_equation/gk_magnetic_drift.f90
   ../STELLA_CODE/gyrokinetic_equation/gk_mirror.f90

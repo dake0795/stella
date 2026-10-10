@@ -48,6 +48,7 @@ module initialise_distribution_function
 
    ! When we restart a simulation, we need to access <tstart>
    public :: tstart
+   public :: init_distribution_switch
 
    private
    

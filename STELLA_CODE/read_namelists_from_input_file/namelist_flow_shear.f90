@@ -9,6 +9,7 @@
 !     hammett_flow_shear = .true.
 !     explicit_junction_sync = 'none'
 !     flow_shear_explicit_remap = .false.
+!     flow_shear_moving_k = .false.
 !     g_exb = 0.0
 !     g_exbfac = 1.0
 !     omprimfac = 1.0
@@ -43,7 +44,7 @@ contains
    !                               FLOW SHEAR TERMS                            !
    !****************************************************************************
    subroutine read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
-      omprimfac, explicit_junction_sync, flow_shear_explicit_remap)
+      omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k)
 
       use mp, only: proc0
 
@@ -53,6 +54,7 @@ contains
       logical, intent(out) :: prp_shear_enabled, hammett_flow_shear 
       character(len=8), intent(out) :: explicit_junction_sync
       logical, intent(out) :: flow_shear_explicit_remap
+      logical, intent(out) :: flow_shear_moving_k
       real :: g_exb, g_exbfac, omprimfac
       
       !-------------------------------------------------------------------------
@@ -78,6 +80,10 @@ contains
          ! Fully explicit simulations: apply the perpendicular flow-shear remap after each
          ! accepted explicit step. Otherwise the remap is only applied in the implicit solve.
          flow_shear_explicit_remap = .false.
+         ! Treat the perpendicular flow shear continuously in time: each mode keeps its
+         ! label akx and its physical kx moves as kx - g_exb*ky*t (moving wavevector)
+         ! instead of being remapped by one radial grid spacing at a time.
+         flow_shear_moving_k = .false.
          g_exb = 0.0
          g_exbfac = 1.0
          omprimfac = 1.0
@@ -92,7 +98,8 @@ contains
 
          namelist /flow_shear/ prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, omprimfac, &
             explicit_junction_sync, &
-            flow_shear_explicit_remap
+            flow_shear_explicit_remap, &
+            flow_shear_moving_k
          in_file = input_unit_exist('flow_shear', dexist)
          if (dexist) read (unit=in_file, nml=flow_shear)
 
@@ -112,6 +119,7 @@ contains
          write (unit, '(A, L1)') '  hammett_flow_shear = ', hammett_flow_shear
          write (unit, '(A, A, A)') '  explicit_junction_sync = "', trim(explicit_junction_sync), '"'
          write (unit, '(A, L1)') '  flow_shear_explicit_remap = ', flow_shear_explicit_remap
+         write (unit, '(A, L1)') '  flow_shear_moving_k = ', flow_shear_moving_k
          write (unit, '(A, ES0.4)') '  g_exb = ', g_exb
          write (unit, '(A, ES0.4)') '  g_exbfac = ', g_exbfac
          write (unit, '(A, ES0.4)') '  omprimfac = ', omprimfac

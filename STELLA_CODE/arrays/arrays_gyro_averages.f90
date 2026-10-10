@@ -41,6 +41,7 @@ module arrays_gyro_averages
    ! Make routines available to other modules
    public :: init_arrays_bessel_functions
    public :: finish_arrays_bessel_functions
+   public :: refresh_moving_bessel_functions
    public :: find_max_required_kalpha_index
 
    ! Make arrays available
@@ -107,6 +108,20 @@ contains
       !if(debug_test_gyro_average) call test_gyro_average
       
    end subroutine init_arrays_bessel_functions
+
+   !****************************************************************************
+   !            Recalculate the Bessel functions after kperp2 changed
+   !****************************************************************************
+   subroutine refresh_moving_bessel_functions
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      call init_bessel_versus_mu_aj0v_aj1v
+      call init_bessel_versus_kxky_aj0x_aj1x
+
+   end subroutine refresh_moving_bessel_functions
    
    !****************************************************************************
    !                    Initialise Bessel functions versus mu                   

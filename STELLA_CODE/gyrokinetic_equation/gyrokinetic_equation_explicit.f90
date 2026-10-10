@@ -43,6 +43,8 @@ contains
       use gk_flow_shear, only: explicit_junction_sync
       use gk_flow_shear, only: flow_shear_explicit_remap
       use parameters_numerical, only: fully_explicit
+      use arrays, only: flow_shear_moving_k
+      use gk_flow_shear_moving_k, only: init_flow_shear_moving_k
 
       implicit none
 
@@ -63,13 +65,15 @@ contains
          call mp_abort('explicit_junction_sync should be none, step or stage')
       end select
 
-      ! The flow-shear remap of the explicit time advance is only applied when
-      ! the implicit solve, which also applies it, is never used
-      if (flow_shear_explicit_remap) then
+      ! The flow-shear remap of the explicit time advance, and the moving-wavevector
+      ! flow shear, are only used when the implicit time advance is never used
+      if (flow_shear_explicit_remap .or. flow_shear_moving_k) then
          call derive_implicit_split
          call keep_fully_explicit_with_hyper_dissipation
-         if (.not. fully_explicit) call mp_abort('flow_shear_explicit_remap requires a fully explicit simulation')
       end if
+      if (flow_shear_explicit_remap .and. .not. fully_explicit) &
+         call mp_abort('flow_shear_explicit_remap requires a fully explicit simulation')
+      if (flow_shear_moving_k) call init_flow_shear_moving_k
 
    end subroutine init_gyrokinetic_equation_explicit
 
@@ -176,6 +180,8 @@ contains
       use parameters_numerical, only: fully_explicit
       use gk_flow_shear, only: prp_shear_enabled, flow_shear_explicit_remap
       use gk_flow_shear, only: advance_perp_flow_shear
+      use arrays, only: flow_shear_moving_k
+      use gk_flow_shear_moving_k, only: prepare_moving_k_stage, relabel_moving_k
       
       ! Grids
       use grids_z, only: nzgrid
@@ -237,6 +243,17 @@ contains
       case (explicit_algorithm_rk4)
          call advance_explicit_rk4(g, restart_time_step, istep)
       end select
+
+      ! Moving-wavevector flow shear: relabel after an accepted step. If the time
+      ! step is restarted, restore the metric of the committed state instead.
+      if (flow_shear_moving_k) then
+         if (restart_time_step) then
+            call prepare_moving_k_stage(0.0)
+            if (proc0) call time_message(.false., time_gke(:, 8), ' explicit')
+            return
+         end if
+         call relabel_moving_k(g)
+      end if
 
       ! Re-synchronise the junction points of the accepted state. The parallel
       ! vector potential is single-valued at the junctions, so this applies to gbar too.
@@ -886,6 +903,9 @@ contains
 
       ! Distribution function
       use arrays_distribution_function, only: g0, g1, g2, g3
+
+      ! Moving-wavevector flow shear: metric of each Runge-Kutta stage
+      use gk_flow_shear_moving_k, only: prepare_moving_k_stage
       
       ! Grids
       use grids_z, only: nzgrid
@@ -919,23 +939,27 @@ contains
          ! Fourth order Runge-Kutta Scheme
          select case (counter)
          case (1)
+            call prepare_moving_k_stage(0.0)
             call add_explicit_gyrokinetic_terms(g0, g1, restart_time_step, istep)
          case (2)
             g3 = g0 + 0.5 * g1 ! g1 is h*k1
             if (rk_step) call mb_communicate(g3)
             if (junction_sync_stage) call synchronise_zgrid_junctions(g3)
+            call prepare_moving_k_stage(0.5)
             call add_explicit_gyrokinetic_terms(g3, g2, restart_time_step, istep)
             g1 = g1 + 2.*g2
          case (3)
             g2 = g0 + 0.5 * g2 ! g2 is h*k2
             if (rk_step) call mb_communicate(g2)
             if (junction_sync_stage) call synchronise_zgrid_junctions(g2)
+            call prepare_moving_k_stage(0.5)
             call add_explicit_gyrokinetic_terms(g2, g3, restart_time_step, istep)
             g1 = g1 + 2.*g3
          case (4)
             g3 = g0 + g3 ! g3 is h*k3
             if (rk_step) call mb_communicate(g3)
             if (junction_sync_stage) call synchronise_zgrid_junctions(g3)
+            call prepare_moving_k_stage(1.0)
             call add_explicit_gyrokinetic_terms(g3, g, restart_time_step, istep)
             g1 = g1 + g
          end select

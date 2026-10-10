@@ -59,6 +59,7 @@ stella_mod = \
 	 $(OBJ_DIR)/gk_drive.o \
 	 $(OBJ_DIR)/gk_ffs_solve.o \
 	 $(OBJ_DIR)/gk_flow_shear.o \
+	 $(OBJ_DIR)/gk_flow_shear_moving_k.o \
 	 $(OBJ_DIR)/gk_implicit_terms.o \
 	 $(OBJ_DIR)/gk_magnetic_drift.o \
 	 $(OBJ_DIR)/gk_mirror.o \
@@ -172,6 +173,7 @@ $(OBJ_DIR)/calculations_kxky.o: \
 	 $(OBJ_DIR)/job_manage.o \
 	 $(OBJ_DIR)/mp.o 
 $(OBJ_DIR)/calculations_kxky_derivatives.o: \
+	 $(OBJ_DIR)/arrays.o \
 	 $(OBJ_DIR)/arrays_gyro_averages.o \
 	 $(OBJ_DIR)/calculations_gyro_averages.o \
 	 $(OBJ_DIR)/constants.o \
@@ -544,6 +546,8 @@ $(OBJ_DIR)/field_equations.o: \
 	 $(OBJ_DIR)/arrays.o \
 	 $(OBJ_DIR)/arrays_distribution_function.o \
 	 $(OBJ_DIR)/arrays_fields.o \
+	 $(OBJ_DIR)/arrays_gyro_averages.o \
+	 $(OBJ_DIR)/calculations_velocity_integrals.o \
 	 $(OBJ_DIR)/calculations_volume_averages.o \
 	 $(OBJ_DIR)/debug_flags.o \
 	 $(OBJ_DIR)/field_equations_electromagnetic.o \
@@ -553,6 +557,7 @@ $(OBJ_DIR)/field_equations.o: \
 	 $(OBJ_DIR)/file_utils.o \
 	 $(OBJ_DIR)/grids_kxky.o \
 	 $(OBJ_DIR)/grids_species.o \
+	 $(OBJ_DIR)/grids_velocity.o \
 	 $(OBJ_DIR)/grids_z.o \
 	 $(OBJ_DIR)/job_manage.o \
 	 $(OBJ_DIR)/linear_solve.o \
@@ -794,6 +799,29 @@ $(OBJ_DIR)/gk_flow_shear.o: \
 	 $(OBJ_DIR)/namelist_flow_shear.o \
 	 $(OBJ_DIR)/parallelisation_layouts.o \
 	 $(OBJ_DIR)/parameters_physics.o 
+$(OBJ_DIR)/gk_flow_shear_moving_k.o: \
+	 $(OBJ_DIR)/arrays.o \
+	 $(OBJ_DIR)/arrays_gyro_averages.o \
+	 $(OBJ_DIR)/dissipation_and_collisions.o \
+	 $(OBJ_DIR)/dissipation_hyper.o \
+	 $(OBJ_DIR)/field_equations.o \
+	 $(OBJ_DIR)/file_utils.o \
+	 $(OBJ_DIR)/geometry.o \
+	 $(OBJ_DIR)/gk_flow_shear.o \
+	 $(OBJ_DIR)/gk_sources.o \
+	 $(OBJ_DIR)/grids_kxky.o \
+	 $(OBJ_DIR)/grids_species.o \
+	 $(OBJ_DIR)/grids_time.o \
+	 $(OBJ_DIR)/grids_z.o \
+	 $(OBJ_DIR)/initialise_arrays.o \
+	 $(OBJ_DIR)/initialise_distribution_function.o \
+	 $(OBJ_DIR)/mp.o \
+	 $(OBJ_DIR)/namelist_initialise_distribution_function.o \
+	 $(OBJ_DIR)/neoclassical_terms.o \
+	 $(OBJ_DIR)/parallelisation_layouts.o \
+	 $(OBJ_DIR)/parameters_multibox.o \
+	 $(OBJ_DIR)/parameters_numerical.o \
+	 $(OBJ_DIR)/parameters_physics.o 
 $(OBJ_DIR)/gk_implicit_terms.o: \
 	 $(OBJ_DIR)/arrays.o \
 	 $(OBJ_DIR)/arrays_distribution_function.o \
@@ -1025,6 +1053,7 @@ $(OBJ_DIR)/grids_z.o: \
 	 $(OBJ_DIR)/mp.o \
 	 $(OBJ_DIR)/namelist_z_grid.o 
 $(OBJ_DIR)/gyrokinetic_equation_explicit.o: \
+	 $(OBJ_DIR)/arrays.o \
 	 $(OBJ_DIR)/arrays_distribution_function.o \
 	 $(OBJ_DIR)/arrays_fields.o \
 	 $(OBJ_DIR)/arrays_gyro_averages.o \
@@ -1040,6 +1069,7 @@ $(OBJ_DIR)/gyrokinetic_equation_explicit.o: \
 	 $(OBJ_DIR)/gk_ExB_nonlinearity.o \
 	 $(OBJ_DIR)/gk_drive.o \
 	 $(OBJ_DIR)/gk_flow_shear.o \
+	 $(OBJ_DIR)/gk_flow_shear_moving_k.o \
 	 $(OBJ_DIR)/gk_implicit_terms.o \
 	 $(OBJ_DIR)/gk_magnetic_drift.o \
 	 $(OBJ_DIR)/gk_mirror.o \
@@ -1392,6 +1422,7 @@ $(OBJ_DIR)/stella.o: \
 	 $(OBJ_DIR)/diagnostics_omega.o \
 	 $(OBJ_DIR)/field_equations.o \
 	 $(OBJ_DIR)/file_utils.o \
+	 $(OBJ_DIR)/gk_flow_shear_moving_k.o \
 	 $(OBJ_DIR)/gk_radial_variation.o \
 	 $(OBJ_DIR)/grids_time.o \
 	 $(OBJ_DIR)/gyrokinetic_equation_explicit.o \

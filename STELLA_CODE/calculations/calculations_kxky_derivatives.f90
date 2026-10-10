@@ -136,18 +136,25 @@ contains
    !****************************************************************************
    !                      Fourier [ dg/dx ] = i kx g(ky,kx)                     
    !****************************************************************************
+   ! With the moving-wavevector flow shear, kx is the physical wavenumber kx_phys
+   !****************************************************************************
    subroutine get_dgdx_2d(g, dgdx)
 
       use constants, only: zi
       use grids_kxky, only: naky
       use grids_kxky, only: akx
+      use arrays, only: flow_shear_moving_k, kx_phys
 
       implicit none
 
       complex, dimension(:, :), intent(in) :: g
       complex, dimension(:, :), intent(out) :: dgdx
 
-      dgdx = zi * spread(akx, 1, naky) * g
+      if (flow_shear_moving_k) then
+         dgdx = zi * kx_phys * g
+      else
+         dgdx = zi * spread(akx, 1, naky) * g
+      end if
 
    end subroutine get_dgdx_2d
 
@@ -160,6 +167,7 @@ contains
       use grids_z, only: nzgrid, ntubes
       use grids_kxky, only: nakx
       use grids_kxky, only: akx
+      use arrays, only: flow_shear_moving_k, kx_phys
 
       implicit none
 
@@ -173,7 +181,11 @@ contains
       do it = 1, ntubes
          do iz = -nzgrid, nzgrid
             do ikx = 1, nakx
-               dgdx(:, ikx, iz, it) = zi * akx(ikx) * g(:, ikx, iz, it)
+               if (flow_shear_moving_k) then
+                  dgdx(:, ikx, iz, it) = zi * kx_phys(:, ikx) * g(:, ikx, iz, it)
+               else
+                  dgdx(:, ikx, iz, it) = zi * akx(ikx) * g(:, ikx, iz, it)
+               end if
             end do
          end do
       end do
@@ -190,6 +202,7 @@ contains
       use grids_z, only: nzgrid, ntubes
       use grids_kxky, only: nakx
       use grids_kxky, only: akx
+      use arrays, only: flow_shear_moving_k, kx_phys
 
       implicit none
 
@@ -204,7 +217,11 @@ contains
          do it = 1, ntubes
             do iz = -nzgrid, nzgrid
                do ikx = 1, nakx
-                  dgdx(:, ikx, iz, it, ivmu) = zi * akx(ikx) * g(:, ikx, iz, it, ivmu)
+                  if (flow_shear_moving_k) then
+                     dgdx(:, ikx, iz, it, ivmu) = zi * kx_phys(:, ikx) * g(:, ikx, iz, it, ivmu)
+                  else
+                     dgdx(:, ikx, iz, it, ivmu) = zi * akx(ikx) * g(:, ikx, iz, it, ivmu)
+                  end if
                end do
             end do
          end do
@@ -405,6 +422,7 @@ contains
       use grids_species, only: spec
       use grids_velocity, only: vpa, mu
       use grids_kxky, only: naky, nakx, akx
+      use arrays, only: flow_shear_moving_k, kx_phys
 
       implicit none
 
@@ -431,7 +449,11 @@ contains
       ! Calculate [i kx phi(ky,kx)]
       field = fphi * phi
       if (include_apar) field = field - 2.0 * vpa(iv) * spec(is)%stm_psi0 * apar
-      field = zi * spread(akx, 1, naky) * field
+      if (flow_shear_moving_k) then
+         field = zi * kx_phys * field
+      else
+         field = zi * spread(akx, 1, naky) * field
+      end if
 
       ! Take the gyro-average, i.e., add the factor J_0
       if (full_flux_surface) then
@@ -443,7 +465,11 @@ contains
       ! Add bpar contribution
       if (include_bpar) then
          field = 4 * mu(imu) * (spec(is)%tz) * bpar
-         field = zi * spread(akx, 1, naky) * field
+         if (flow_shear_moving_k) then
+            field = zi * kx_phys * field
+         else
+            field = zi * spread(akx, 1, naky) * field
+         end if
          call gyro_average_j1(field, iz, ivmu, gyro_tmp)
          dchidx = dchidx + gyro_tmp
       end if

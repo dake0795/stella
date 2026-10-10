@@ -51,6 +51,7 @@ module arrays
    
    ! For flow shear
    public :: shift_state
+   public :: flow_shear_moving_k, kx_phys, shift_stage
    
    ! For the reponse matrix
    public :: response_matrix
@@ -123,6 +124,13 @@ module arrays
    
    ! For flow shear
    real, dimension(:), allocatable :: shift_state
+   
+   ! For the moving-wavevector flow shear, akx(ikx) is a fixed label and the
+   ! physical radial wavenumber of mode (iky, ikx) is kx_phys(iky, ikx).
+   ! <shift_stage> is the residual shear time of the current Runge-Kutta stage.
+   logical :: flow_shear_moving_k = .false.
+   real, dimension(:, :), allocatable :: kx_phys
+   real, dimension(:), allocatable :: shift_stage
 
    !----------------------------------------------------------------------------
    ! For the Field Equations

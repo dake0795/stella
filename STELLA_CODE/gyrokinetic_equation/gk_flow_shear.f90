@@ -93,6 +93,7 @@ contains
       
       ! Read namelists from input file
       use namelist_flow_shear, only: read_namelist_flow_shear
+      use arrays, only: flow_shear_moving_k
 
       implicit none
 
@@ -100,13 +101,14 @@ contains
       
       ! Read the "flow_shear" namelist in the input file
       call read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
-         omprimfac, explicit_junction_sync, flow_shear_explicit_remap)
+         omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k)
       
       ! Broadcast the input parameters
       call broadcast(prp_shear_enabled)
       call broadcast(hammett_flow_shear)
       call broadcast(explicit_junction_sync)
       call broadcast(flow_shear_explicit_remap)
+      call broadcast(flow_shear_moving_k)
       call broadcast(g_exb)
       call broadcast(g_exbfac)
       call broadcast(omprimfac)
@@ -143,7 +145,7 @@ contains
       use parameters_physics, only: radial_variation
       
       ! Flow shear arrays
-      use arrays, only: shift_state
+      use arrays, only: shift_state, flow_shear_moving_k
 
       implicit none
 
@@ -212,9 +214,15 @@ contains
          !     gamma_E = (r/q) (dOmega_zeta(dr) (a/v_{th,ref})
          ! TODO - make formula match code
          do iz = -nzgrid, nzgrid
-            prl_shear(ia, iz, ivmu) = -omprimfac * g_exb * code_dt * vpa(iv) * spec(is)%stm_psi0 &
-              * dydalpha * drhodpsi * (geo_surf%qinp_psi0 / geo_surf%rhoc_psi0) &
-              * (btor(iz) * rmajor(iz) / bmag(ia, iz)) * (spec(is)%mass / spec(is)%temp)
+            if (flow_shear_moving_k .and. omprimfac == 0.0) then
+               ! The moving-wavevector flow shear requires omprimfac = 0; do not evaluate
+               ! the geometric factors, which are not defined for every geometry (zpinch)
+               prl_shear(ia, iz, ivmu) = 0.0
+            else
+               prl_shear(ia, iz, ivmu) = -omprimfac * g_exb * code_dt * vpa(iv) * spec(is)%stm_psi0 &
+                 * dydalpha * drhodpsi * (geo_surf%qinp_psi0 / geo_surf%rhoc_psi0) &
+                 * (btor(iz) * rmajor(iz) / bmag(ia, iz)) * (spec(is)%mass / spec(is)%temp)
+            end if
          end do
          
          ! Add the Mawellian exp(v²)

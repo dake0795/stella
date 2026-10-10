@@ -18,6 +18,7 @@ module initialise_arrays
    ! Make routines available to other modules
    public :: init_arrays_vperp_kperp
    public :: finish_arrays_vperp_kperp
+   public :: refresh_moving_kperp2
 
    private
 
@@ -28,6 +29,35 @@ module initialise_arrays
    logical :: initialised_vperp2 = .false.
 
 contains
+
+   !****************************************************************************
+   !          Recalculate |k_perp|^2 at the physical radial wavenumber
+   !****************************************************************************
+   ! Used by the moving-wavevector flow shear; the geometry is unchanged.
+   !****************************************************************************
+   subroutine refresh_moving_kperp2
+
+      use arrays, only: kperp2, kx_phys
+      use geometry, only: grady_dot_grady, gradx_dot_grady, gradx_dot_gradx
+      use grids_kxky, only: naky, nakx, aky
+
+      implicit none
+
+      integer :: iky, ikx
+
+      !-------------------------------------------------------------------------
+
+      do iky = 1, naky
+         do ikx = 1, nakx
+            kperp2(iky, ikx, :, :) = kx_phys(iky, ikx)**2 * gradx_dot_gradx &
+               + 2.0 * kx_phys(iky, ikx) * aky(iky) * gradx_dot_grady &
+               + aky(iky)**2 * grady_dot_grady
+         end do
+      end do
+      where (kperp2 < 0.0) kperp2 = 0.0
+      call enforce_single_valued_kperp2
+
+   end subroutine refresh_moving_kperp2
 
 !###############################################################################
 !######################### INITIALISE CONSTANT ARRAYS ##########################

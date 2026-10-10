@@ -54,6 +54,7 @@ contains
       use gk_mirror, only: mirror
       use arrays, only: wdriftx_g, wdrifty_g
       use arrays, only: wstar
+      use arrays, only: flow_shear_moving_k, kx_phys
       
       ! Collisions
       use dissipation_and_collisions, only: include_collisions, collisions_implicit
@@ -71,6 +72,7 @@ contains
       real :: cfl_dt_mirror, cfl_dt_stream, cfl_dt_shear
       real :: cfl_dt_wdriftx, cfl_dt_wdrifty, cfl_dt_wstar
       real :: wdriftx_max, wdrifty_max, wstar_max, zero
+      real :: kx_max
       
       !-------------------------------------------------------------------------
 
@@ -91,7 +93,14 @@ contains
          end if
          
          ! NB: wdriftx_g has code_dt built-in, which accounts for code_dt factor here
-         cfl_dt_wdriftx = abs(code_dt) / max(maxval(abs(akx)) * wdriftx_max, zero)
+         ! With the moving-wavevector flow shear the physical kx of a Runge-Kutta stage
+         ! lies within 1.5 radial grid spacings of its label (|tau| <= T/2 and dt <= T)
+         kx_max = maxval(abs(akx))
+         if (flow_shear_moving_k .and. size(akx) > 1) then
+            kx_max = kx_max + 1.5 * abs(akx(2))
+            if (allocated(kx_phys)) kx_max = max(kx_max, maxval(abs(kx_phys)) + abs(akx(2)))
+         end if
+         cfl_dt_wdriftx = abs(code_dt) / max(kx_max * wdriftx_max, zero)
          cfl_dt_linear = cfl_dt_wdriftx
          
       end if

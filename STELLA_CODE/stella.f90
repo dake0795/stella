@@ -181,6 +181,7 @@ contains
       ! Advance the distribution function using the gyrokinetic equation
       use gyrokinetic_equation_explicit, only: advance_distribution_function_using_explicit_gyrokinetic_terms
       use gyrokinetic_equation_implicit, only: advance_distribution_function_using_implicit_gyrokinetic_terms
+      use gk_flow_shear_moving_k, only: prepare_moving_k_stage
       use gk_radial_variation, only: advance_distribution_function_and_fields_radial_variation
       use gk_radial_variation, only: advance_distribution_function_and_fields_radial_variation_init
       
@@ -235,6 +236,9 @@ contains
 
          ! If we've already attempted a time advance then we've updated gnew, so reset it.
          gnew = gold
+
+         ! For the moving-wavevector flow shear, restore the metric of the committed state
+         call prepare_moving_k_stage(0.0)
 
          ! Ensure fields are consistent with gnew.
          ! Use the quasi-neutrality equation to advance the fields in time

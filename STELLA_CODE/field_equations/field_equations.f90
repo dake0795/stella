@@ -34,6 +34,7 @@ module field_equations
    public :: finish_field_equations
    public :: advance_fields
    public :: rescale_fields
+   public :: refresh_moving_two_field_response
 
    ! Make parameters available to other modules
    public :: fields_updated
@@ -54,6 +55,65 @@ module field_equations
    logical :: initialised_fields = .false.
 
 contains
+
+   !****************************************************************************
+   !         Recalculate the phi and apar denominators after kperp2 changed
+   !****************************************************************************
+   ! Used by the moving-wavevector flow shear, which is restricted to local flux
+   ! tubes with phi and apar (no bpar). Recomputes, with the same quadrature as
+   ! the initialisation,
+   !     denominator_fields = sum_s (Z_s^2 n_s/T_s) int (1 - J0^2) F0,
+   !     apar_denom = kperp2 + 2 beta sum_s (Z_s^2 n_s/m_s) int vpa^2 J0^2 F0.
+   !****************************************************************************
+   subroutine refresh_moving_two_field_response
+
+      use mp, only: sum_allreduce
+      use parallelisation_layouts, only: kxkyz_lo, iz_idx, it_idx, ikx_idx, iky_idx, is_idx
+      use arrays, only: denominator_fields, apar_denom, kperp2
+      use arrays_gyro_averages, only: aj0v
+      use grids_species, only: spec
+      use grids_velocity, only: nvpa, nmu, vpa, maxwell_vpa, maxwell_mu, maxwell_fac
+      use grids_kxky, only: zonal_mode, akx
+      use parameters_physics, only: beta
+      use calculations_velocity_integrals, only: integrate_vmu
+
+      implicit none
+
+      integer :: ikxkyz, iz, ikx, iky, is
+      real :: tmp, wgt
+      real, dimension(:, :), allocatable :: integrand
+
+      !-------------------------------------------------------------------------
+
+      allocate (integrand(nvpa, nmu))
+      denominator_fields = 0.0
+      apar_denom = 0.0
+      do ikxkyz = kxkyz_lo%llim_proc, kxkyz_lo%ulim_proc
+         if (it_idx(kxkyz_lo, ikxkyz) /= 1) cycle
+         iky = iky_idx(kxkyz_lo, ikxkyz)
+         ikx = ikx_idx(kxkyz_lo, ikxkyz)
+         iz = iz_idx(kxkyz_lo, ikxkyz)
+         is = is_idx(kxkyz_lo, ikxkyz)
+         integrand = spread(1.0 - aj0v(:, ikxkyz)**2, 1, nvpa) &
+            * spread(maxwell_vpa(:, is), 2, nmu) &
+            * spread(maxwell_mu(1, iz, :, is), 1, nvpa) * maxwell_fac(is)
+         wgt = spec(is)%z**2 * spec(is)%dens_psi0 / spec(is)%temp
+         call integrate_vmu(integrand, iz, tmp)
+         denominator_fields(iky, ikx, iz) = denominator_fields(iky, ikx, iz) + tmp * wgt
+         integrand = spread(maxwell_vpa(:, is) * vpa**2, 2, nmu) * maxwell_fac(is) &
+            * spread(maxwell_mu(1, iz, :, is) * aj0v(:, ikxkyz)**2, 1, nvpa)
+         wgt = 2.0 * beta * spec(is)%z**2 * spec(is)%dens / spec(is)%mass
+         call integrate_vmu(integrand, iz, tmp)
+         apar_denom(iky, ikx, iz) = apar_denom(iky, ikx, iz) + tmp * wgt
+      end do
+      call sum_allreduce(denominator_fields)
+      call sum_allreduce(apar_denom)
+      apar_denom = apar_denom + kperp2(:, :, 1, :)
+      if (zonal_mode(1) .and. akx(1) < epsilon(0.)) denominator_fields(1, 1, :) = 0.0
+      fields_updated = .false.
+      deallocate (integrand)
+
+   end subroutine refresh_moving_two_field_response
 
 !###############################################################################
 !############################## ADVANCE ALL FIELDS #############################
