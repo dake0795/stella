@@ -23,6 +23,10 @@
 ! are dropped. kperp2, the Bessel functions and the field denominators are
 ! recalculated whenever the physical wavenumbers change.
 !
+! In the ExB nonlinearity the fields and the distribution function are
+! transformed to real space in the sheared frame, y' = y - gamma_E tau x, of
+! the Runge-Kutta stage, with the derivatives evaluated at kx_phys.
+! 
 ! The algorithm is restricted to local flux tubes with kinetic electrons, phi
 ! and A_parallel (no B_parallel), the explicit rk4 scheme and no collisions.
 ! All restrictions are checked at initialisation.
@@ -93,14 +97,14 @@ contains
       use mp, only: proc0, mp_abort
       use arrays, only: shift_state
       use geometry, only: q_as_x
-      use grids_kxky, only: box, nakx, naky, akx, aky, nalpha
+      use grids_kxky, only: box, nakx, naky, akx, aky, nalpha, nx
       use grids_z, only: ntubes
       use grids_time, only: code_time, code_dt_max
       use grids_species, only: spec, has_electron_species
       use parallelisation_layouts, only: fields_kxkyz
       use parameters_physics, only: full_flux_surface, radial_variation
       use parameters_physics, only: include_apar, include_bpar, fphi
-      use parameters_physics, only: include_nonlinear
+      use parameters_physics, only: include_nonlinear, include_parallel_nonlinearity
       use parameters_physics, only: include_mirror, include_parallel_streaming
       use parameters_numerical, only: fully_explicit, fully_implicit, flip_flop
       use parameters_numerical, only: stream_implicit, mirror_implicit, drifts_implicit, driftkinetic_implicit
@@ -149,7 +153,10 @@ contains
       if (stream_implicit) call mp_abort('moving-k flow shear requires stream_implicit = F')
 
       ! Physics
-      if (include_nonlinear) call mp_abort('moving-k flow shear does not support the nonlinearity')
+      if (include_parallel_nonlinearity) call mp_abort('moving-k flow shear does not support the parallel nonlinearity')
+      ! With mod(nx, 3) = 1 products of the extreme sheared labels alias into the retained modes
+      if (include_nonlinear .and. mod(nx, 3) == 1) &
+         call mp_abort('moving-k flow shear with the nonlinearity requires mod(nx, 3) /= 1')
       if (include_collisions) call mp_abort('moving-k flow shear does not support collisions')
       if (hyper_dissipation .and. abs(D_hyper) > 0.0) &
          call mp_abort('moving-k flow shear only supports parallel hyper-dissipation (D_hyper = 0)')

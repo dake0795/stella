@@ -55,6 +55,7 @@ contains
       
       ! Fields
       use arrays, only: shift_state
+      use arrays, only: flow_shear_moving_k, shift_stage, kx_phys
       use arrays_fields, only: phi, apar, bpar
       use arrays_fields, only: phi_corr_QN, phi_corr_GA
       use arrays_distribution_function, only: phi_gyro
@@ -92,7 +93,7 @@ contains
       real, dimension(:, :), allocatable :: g0xy, g1xy, bracket
       complex, dimension(:, :), allocatable :: tmp
       integer :: ivmu, iz, it, imu, is
-      real :: zero, cfl_dt
+      real :: zero, cfl_dt, kx_cfl
       logical :: yfirst
 
       !-------------------------------------------------------------------------
@@ -111,6 +112,14 @@ contains
       ! By default, prp_shear_enabled = .false. and thus yfirst = .true., and we Fourier transform y first
       ! If perpendicular flow shear is included, it is important to Fourier transform x first
       yfirst = .not. prp_shear_enabled
+
+      ! Largest radial wavenumber for the CFL estimate. With the moving-wavevector
+      ! flow shear, the later Runge-Kutta stages move kx by at most one grid spacing.
+      if (flow_shear_moving_k) then
+         kx_cfl = maxval(abs(kx_phys)) + akx(2)
+      else
+         kx_cfl = akx(ikx_max)
+      end if
 
       ! Allocate arrays
       allocate (apar_kykx(naky, nakx))
@@ -132,8 +141,12 @@ contains
       end if
 
       ! Compute phase factor needed when running with equilibrium flow shear
+      ! With the moving-wavevector flow shear the physical fields are the label fields in the
+      ! sheared frame y' = y - gamma_E*tau*x, at the residual shear time of the Runge-Kutta stage
       prefac = 1.0
-      if (prp_shear_enabled .and. hammett_flow_shear) then
+      if (flow_shear_moving_k .and. abs(g_exb * g_exbfac) > epsilon(0.)) then
+         prefac = exp(-zi * g_exb * g_exbfac * spread(x, 1, naky) * spread(aky * shift_stage, 2, nx))
+      else if (prp_shear_enabled .and. hammett_flow_shear) then
          prefac = exp(-zi * g_exb * g_exbfac * spread(x, 1, naky) * spread(aky * shift_state, 2, nx))
       end if
 
@@ -172,8 +185,8 @@ contains
                end if
                
                ! If running with equilibrium flow shear, make adjustment to
-               ! The term multiplying dg/dy
-               if (prp_shear_enabled .and. hammett_flow_shear) then
+               ! The term multiplying dg/dy (already included in kx_phys for the moving wavevector)
+               if (prp_shear_enabled .and. hammett_flow_shear .and. .not. flow_shear_moving_k) then
                   call get_dchidy(iz, ivmu, phi(:, :, iz, it), apar_kykx, bpar_kykx, g0a)
                   g0k = g0k - g_exb * g_exbfac * spread(shift_state, 2, nakx) * g0a
                end if
@@ -212,7 +225,8 @@ contains
                end if
                
                ! If running with equilibrium flow shear, correct dg/dx term
-               if (prp_shear_enabled .and. hammett_flow_shear) then
+               ! (already included in kx_phys for the moving wavevector)
+               if (prp_shear_enabled .and. hammett_flow_shear .and. .not. flow_shear_moving_k) then
                   call get_dgdy(g(:, :, iz, it, ivmu), g0a)
                   g0k = g0k - g_exb * g_exbfac * spread(shift_state, 2, nakx) * g0a
                end if
@@ -238,7 +252,7 @@ contains
                bracket = bracket - g0xy * g1xy
 
                ! Estimate the CFL dt due to the above contribution
-               cfl_dt_ExB = min(cfl_dt_ExB, 2.*pi / max(maxval(abs(g1xy)) * akx(ikx_max), zero))
+               cfl_dt_ExB = min(cfl_dt_ExB, 2.*pi / max(maxval(abs(g1xy)) * kx_cfl, zero))
 
                if (radial_variation) then
                   bracket = bracket - gfac * g0xy * g1xy * exb_nonlin_fac_p * spread(rho_clamped, 1, ny)
@@ -249,7 +263,7 @@ contains
                   g1xy = g1xy * exb_nonlin_fac
                   bracket = bracket - g0xy * g1xy
                   ! Estimate the CFL dt due to the above contribution
-                  cfl_dt_ExB = min(cfl_dt_ExB, 2.*pi / max(maxval(abs(g1xy)) * akx(ikx_max), zero))
+                  cfl_dt_ExB = min(cfl_dt_ExB, 2.*pi / max(maxval(abs(g1xy)) * kx_cfl, zero))
                end if
 
                if (yfirst) then
