@@ -479,7 +479,10 @@ contains
          end if
       end do
 
-      shift_state = shift_state + code_dt
+      ! The remap clock only runs with a nonzero shear rate. Otherwise it would grow
+      ! without bound and be saved in the restart files, where a later restart with
+      ! shear would interpret it as an accumulated shift.
+      if (abs(g_exb * g_exbfac) > 0.) shift_state = shift_state + code_dt
       if (zonal_mode(1)) shift_state(1) = 0.
 
       if (runtype_option_switch == runtype_multibox) then
