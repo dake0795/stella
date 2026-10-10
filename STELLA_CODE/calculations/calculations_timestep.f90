@@ -26,7 +26,7 @@ contains
    subroutine init_cfl
 
       ! Parallelisation
-      use mp, only: proc0, nproc, max_allreduce, min_allreduce
+      use mp, only: proc0, nproc, max_allreduce, min_allreduce, mp_abort
       use mp, only: scope, allprocs, subprocs
       use debug_flags, only: print_extra_info_to_terminal
       
@@ -121,6 +121,10 @@ contains
          cfl_dt_mirror = abs(code_dt) * dvpa / max(maxval(abs(mirror)), zero)
          cfl_dt_linear = min(cfl_dt_linear, cfl_dt_mirror)
       end if
+
+      ! Stop rather than repeatedly reset the time step if the estimate is not usable
+      if (cfl_dt_linear /= cfl_dt_linear .or. cfl_dt_linear <= 0.0 .or. cfl_dt_linear > huge(0.0)) &
+         call mp_abort('init_cfl: the linear CFL time step is not finite and positive')
 
       ! While other quantities should go here, parallel streaming with electrons is what will limit us
       if (radial_variation) then

@@ -244,6 +244,8 @@ contains
          shift_state = 0.
       end if
 
+      ! Without shear no mode is ever shifted, so the shift time is infinite
+      shift_times = huge(0.)
       if (nakx > 1 .and. abs(g_exb * g_exbfac) > 0) then
          shift_times = abs(akx(2) / (aky * g_exb * g_exbfac))
       end if
