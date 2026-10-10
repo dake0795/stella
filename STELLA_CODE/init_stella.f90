@@ -457,6 +457,7 @@ contains
       
       ! Initialise parts of the gyrokinetic equation
       use gyrokinetic_equation_initialisation, only: init_gyrokinetic_equation
+      use gyrokinetic_equation_explicit, only: init_gyrokinetic_equation_explicit
       use response_matrix, only: init_response_matrix
       use response_matrix, only: read_response_matrix
       
@@ -501,6 +502,10 @@ contains
             call init_response_matrix
          end if
       end if
+
+      ! Options of the explicit time advance
+      if (debug) write (6, *) 'stella::init_stella::init_gyrokinetic_equation_explicit'
+      call init_gyrokinetic_equation_explicit
       
    end subroutine init_time_step_and_gyrokinetic_equation
    

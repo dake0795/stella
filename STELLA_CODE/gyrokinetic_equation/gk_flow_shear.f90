@@ -57,6 +57,7 @@ module gk_flow_shear
    public :: prp_shear_enabled               ! Enables perpendicular flow shear
    public :: hammett_flow_shear
    public :: g_exb, g_exbfac, omprimfac 
+   public :: explicit_junction_sync
 
    private
 
@@ -68,6 +69,7 @@ module gk_flow_shear
    ! Input parameters
    logical :: prp_shear_enabled
    logical :: hammett_flow_shear 
+   character(len=8) :: explicit_junction_sync
    real :: g_exb, g_exbfac, omprimfac
    
    ! Parallel flow shear
@@ -95,11 +97,13 @@ contains
       !-------------------------------------------------------------------------
       
       ! Read the "flow_shear" namelist in the input file
-      call read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, omprimfac)
+      call read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
+         omprimfac, explicit_junction_sync)
       
       ! Broadcast the input parameters
       call broadcast(prp_shear_enabled)
       call broadcast(hammett_flow_shear)
+      call broadcast(explicit_junction_sync)
       call broadcast(g_exb)
       call broadcast(g_exbfac)
       call broadcast(omprimfac)

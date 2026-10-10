@@ -7,6 +7,7 @@
 !   flow_shear
 !     prp_shear_enabled = .false.
 !     hammett_flow_shear = .true.
+!     explicit_junction_sync = 'none'
 !     g_exb = 0.0
 !     g_exbfac = 1.0
 !     omprimfac = 1.0
@@ -40,8 +41,8 @@ contains
    !****************************************************************************
    !                               FLOW SHEAR TERMS                            !
    !****************************************************************************
-   subroutine read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, &
-      g_exb, g_exbfac, omprimfac)
+   subroutine read_namelist_flow_shear(prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, &
+      omprimfac, explicit_junction_sync)
 
       use mp, only: proc0
 
@@ -49,6 +50,7 @@ contains
 
       ! Variables that are read from the input file
       logical, intent(out) :: prp_shear_enabled, hammett_flow_shear 
+      character(len=8), intent(out) :: explicit_junction_sync
       real :: g_exb, g_exbfac, omprimfac
       
       !-------------------------------------------------------------------------
@@ -67,6 +69,10 @@ contains
 
          prp_shear_enabled = .false.
          hammett_flow_shear = .true.
+         ! Explicit schemes: re-synchronise the duplicated twist-and-shift junction points
+         ! of linked modes ('none' = no synchronisation, 'step' = after each accepted step,
+         ! 'stage' = also before each Runge-Kutta stage). The implicit solve always does this.
+         explicit_junction_sync = 'none'
          g_exb = 0.0
          g_exbfac = 1.0
          omprimfac = 1.0
@@ -79,7 +85,8 @@ contains
          use file_utils, only: input_unit_exist
          implicit none
 
-         namelist /flow_shear/ prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, omprimfac
+         namelist /flow_shear/ prp_shear_enabled, hammett_flow_shear, g_exb, g_exbfac, omprimfac, &
+            explicit_junction_sync
          in_file = input_unit_exist('flow_shear', dexist)
          if (dexist) read (unit=in_file, nml=flow_shear)
 
@@ -97,6 +104,7 @@ contains
          write (unit, '(A)') '&flow_shear'
          write (unit, '(A, L1)') '  prp_shear_enabled = ', prp_shear_enabled
          write (unit, '(A, L1)') '  hammett_flow_shear = ', hammett_flow_shear
+         write (unit, '(A, A, A)') '  explicit_junction_sync = "', trim(explicit_junction_sync), '"'
          write (unit, '(A, ES0.4)') '  g_exb = ', g_exb
          write (unit, '(A, ES0.4)') '  g_exbfac = ', g_exbfac
          write (unit, '(A, ES0.4)') '  omprimfac = ', omprimfac

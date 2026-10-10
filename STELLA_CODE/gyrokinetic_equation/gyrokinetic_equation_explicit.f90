@@ -18,11 +18,46 @@ module gyrokinetic_equation_explicit
    implicit none
    
    ! Make routines available to stella.f90
+   public :: init_gyrokinetic_equation_explicit
    public :: advance_distribution_function_using_explicit_gyrokinetic_terms
 
    private
 
+   ! Re-synchronise the duplicated twist-and-shift junction points after each
+   ! accepted step (junction_sync_step) and before each Runge-Kutta stage
+   ! (junction_sync_stage), see <explicit_junction_sync> in the flow_shear namelist
+   logical :: junction_sync_step = .false., junction_sync_stage = .false.
+
 contains
+
+   !****************************************************************************
+   !                    INITIALISE THE EXPLICIT TIME ADVANCE
+   !****************************************************************************
+   subroutine init_gyrokinetic_equation_explicit
+
+      use mp, only: mp_abort
+      use gk_flow_shear, only: explicit_junction_sync
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      ! Synchronisation of the twist-and-shift junction points
+      select case (trim(explicit_junction_sync))
+      case ('none')
+         junction_sync_step = .false.
+         junction_sync_stage = .false.
+      case ('step')
+         junction_sync_step = .true.
+         junction_sync_stage = .false.
+      case ('stage')
+         junction_sync_step = .true.
+         junction_sync_stage = .true.
+      case default
+         call mp_abort('explicit_junction_sync should be none, step or stage')
+      end select
+
+   end subroutine init_gyrokinetic_equation_explicit
 
    !****************************************************************************
    !                       EXPLICIT TIME ADVANCE SUBROUTINES
@@ -42,7 +77,7 @@ contains
       ! Fields
       use parameters_physics, only: include_apar
       use arrays_fields, only: phi, apar, bpar
-      use field_equations, only: advance_fields
+      use field_equations, only: advance_fields, fields_updated
       
       ! Grids
       use grids_z, only: nzgrid
@@ -87,6 +122,9 @@ contains
          call gbar_to_g(g, apar, -1.0)
       end if
 
+      ! Make the junction points of the incoming state single-valued
+      if (junction_sync_stage) call synchronise_zgrid_junctions(g)
+
       ! Use a numerical time advance scheme to advance the distribution function
       ! in time, based on the explicit terms in the gyrokinetic equation. 
       ! Choose between Forward Euler, or 2nd, 3rd or 4rd order Runge-Kutta schemes
@@ -102,8 +140,13 @@ contains
          call advance_explicit_rk4(g, restart_time_step, istep)
       end select
 
+      ! Re-synchronise the junction points of the accepted state. The parallel
+      ! vector potential is single-valued at the junctions, so this applies to gbar too.
+      if (junction_sync_step .and. .not. restart_time_step) call synchronise_zgrid_junctions(g)
+
       ! If the fields are not already updated, then update them
       if (include_apar) then
+         if (junction_sync_step) fields_updated = .false.
          call advance_fields(g, phi, apar, bpar, dist='gbar')
       end if
       
@@ -125,10 +168,77 @@ contains
          end if
       end do
 
+      ! The fields above were solved before the periodic end points were copied;
+      ! solve them again so that they are consistent with the final <g>
+      if (junction_sync_step) then
+         fields_updated = .false.
+         call advance_fields(g, phi, apar, bpar, dist='g')
+      end if
+
       ! Stop the timer for the explicit part of the solve
       if (proc0) call time_message(.false., time_gke(:, 8), ' explicit')
 
    end subroutine advance_distribution_function_using_explicit_gyrokinetic_terms
+
+   !****************************************************************************
+   !                 SYNCHRONISE TWIST-AND-SHIFT JUNCTION POINTS
+   !****************************************************************************
+   ! In a linked (twist-and-shift) chain the junction point between two
+   ! segments is stored twice: at z = +pi of segment i and at z = -pi of
+   ! segment i+1. The implicit solve maps <g> onto the extended z-grid and back
+   ! every step, which writes a single value to both copies. The explicit
+   ! schemes never do this, so the two copies evolve independently and an
+   ! antisymmetric junction mode can grow. Here the same projection is applied
+   ! (map_to_extended_zgrid keeps the value of the preceding segment and
+   ! map_from_extended_zgrid writes it to both copies). For periodic modes the
+   ! upwind end point is copied from the other end, as at the end of a step.
+   !****************************************************************************
+   subroutine synchronise_zgrid_junctions(g)
+
+      ! Parallelisation
+      use parallelisation_layouts, only: vmu_lo, iv_idx
+
+      ! Grids
+      use grids_z, only: nzgrid, ntubes
+      use grids_kxky, only: naky
+      use grids_extended_zgrid, only: neigen, nsegments, nzed_segment
+      use grids_extended_zgrid, only: periodic, phase_shift
+      use grids_extended_zgrid, only: map_to_extended_zgrid, map_from_extended_zgrid
+      use gk_parallel_streaming, only: stream_sign
+
+      implicit none
+
+      ! Arguments
+      complex, dimension(:, :, -nzgrid:, :, vmu_lo%llim_proc:), intent(in out) :: g
+
+      ! Local variables
+      complex, dimension(:), allocatable :: gext
+      integer :: ivmu, iky, ie, it, ulim, sgn
+
+      !-------------------------------------------------------------------------
+
+      allocate (gext((maxval(nsegments) + 1) * (nzed_segment + 1)))
+
+      do ivmu = vmu_lo%llim_proc, vmu_lo%ulim_proc
+         do it = 1, ntubes
+            do iky = 1, naky
+               if (periodic(iky)) then
+                  sgn = stream_sign(iv_idx(vmu_lo, ivmu))
+                  g(iky, :, sgn * nzgrid, it, ivmu) = g(iky, :, -sgn * nzgrid, it, ivmu) * phase_shift(iky)**(-sgn)
+                  cycle
+               end if
+               do ie = 1, neigen(iky)
+                  if (nsegments(ie, iky) < 2) cycle
+                  call map_to_extended_zgrid(it, ie, iky, g(iky, :, :, :, ivmu), gext, ulim)
+                  call map_from_extended_zgrid(it, ie, iky, gext(:ulim), g(iky, :, :, :, ivmu))
+               end do
+            end do
+         end do
+      end do
+
+      deallocate (gext)
+
+   end subroutine synchronise_zgrid_junctions
    
    !****************************************************************************
    !                NEEDED FOR ALL EXPLICIT TIME ADVANCE SUBROUTINES
@@ -491,6 +601,7 @@ contains
          case (2)
             g1 = g0 + g1
             if (rk_step) call mb_communicate(g1)
+            if (junction_sync_stage) call synchronise_zgrid_junctions(g1)
             call add_explicit_gyrokinetic_terms(g1, g, restart_time_step, istep)
          end select
          
@@ -560,10 +671,12 @@ contains
          case (2)
             g1 = g0 + g1
             if (rk_step) call mb_communicate(g1)
+            if (junction_sync_stage) call synchronise_zgrid_junctions(g1)
             call add_explicit_gyrokinetic_terms(g1, g2, restart_time_step, istep)
          case (3)
             g2 = g1 + g2
             if (rk_step) call mb_communicate(g2)
+            if (junction_sync_stage) call synchronise_zgrid_junctions(g2)
             call add_explicit_gyrokinetic_terms(g2, g, restart_time_step, istep)
          end select
          
@@ -632,16 +745,19 @@ contains
          case (2)
             g3 = g0 + 0.5 * g1 ! g1 is h*k1
             if (rk_step) call mb_communicate(g3)
+            if (junction_sync_stage) call synchronise_zgrid_junctions(g3)
             call add_explicit_gyrokinetic_terms(g3, g2, restart_time_step, istep)
             g1 = g1 + 2.*g2
          case (3)
             g2 = g0 + 0.5 * g2 ! g2 is h*k2
             if (rk_step) call mb_communicate(g2)
+            if (junction_sync_stage) call synchronise_zgrid_junctions(g2)
             call add_explicit_gyrokinetic_terms(g2, g3, restart_time_step, istep)
             g1 = g1 + 2.*g3
          case (4)
             g3 = g0 + g3 ! g3 is h*k3
             if (rk_step) call mb_communicate(g3)
+            if (junction_sync_stage) call synchronise_zgrid_junctions(g3)
             call add_explicit_gyrokinetic_terms(g3, g, restart_time_step, istep)
             g1 = g1 + g
          end select
