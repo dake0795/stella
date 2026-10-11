@@ -118,8 +118,10 @@ Restart files written with `flow_shear_moving_k` contain the variables `moving_k
 time traces against expected output for a linear and a nonlinear moving-k simulation and
 for the explicit remap; the bookkeeping of the committed phase in the restart file; a
 restarted versus an uninterrupted simulation; the independence of the defect correction
-from its method, tolerance and preconditioner; the equality of the moving-k and standard
-algorithms at zero shear; and the convergence of the time stepping.
+from its method, tolerance and preconditioner; the equality of the moving-k and fixed-grid
+algorithms at zero shear; the convergence of the time stepping; and the comb invariance of
+the linear dynamics (a jtwist = 2 state embedded in a jtwist = 4 grid stays on its kx comb,
+with the moving wavevector and with the explicit remap).
 
 ## Verification status
 
