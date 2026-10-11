@@ -52,11 +52,14 @@ module gk_flow_shear
    public :: advance_parallel_flow_shear, advance_perp_flow_shear
    public :: v_edge, v_shift
    public :: shift_times
+   public :: perp_flow_shear_pending
+   public :: shift_sign
 
    ! Input parameters
    public :: prp_shear_enabled               ! Enables perpendicular flow shear
    public :: hammett_flow_shear
    public :: g_exb, g_exbfac, omprimfac 
+   public :: energy_budget_diagnostics
    public :: moving_k_stream_offset_keep_on_dt_change
    public :: moving_k_stream_offset_rows
    public :: moving_k_stream_offset_sets
@@ -84,6 +87,7 @@ module gk_flow_shear
    integer :: moving_k_stream_offset_sets
    integer :: moving_k_stream_offset_rows
    logical :: moving_k_stream_offset_keep_on_dt_change
+   logical :: energy_budget_diagnostics
    real :: g_exb, g_exbfac, omprimfac
    
    ! Parallel flow shear
@@ -116,7 +120,8 @@ contains
          omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k, &
          moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method, &
          moving_k_stream_offset_sets, moving_k_stream_offset_rows, &
-         moving_k_stream_offset_keep_on_dt_change, flow_shear_moving_k_import_zero_phase_seed)
+         moving_k_stream_offset_keep_on_dt_change, flow_shear_moving_k_import_zero_phase_seed, &
+         energy_budget_diagnostics)
       
       ! Broadcast the input parameters
       call broadcast(prp_shear_enabled)
@@ -131,6 +136,7 @@ contains
       call broadcast(moving_k_stream_offset_rows)
       call broadcast(moving_k_stream_offset_keep_on_dt_change)
       call broadcast(flow_shear_moving_k_import_zero_phase_seed)
+      call broadcast(energy_budget_diagnostics)
       call broadcast(g_exb)
       call broadcast(g_exbfac)
       call broadcast(omprimfac)
@@ -367,6 +373,34 @@ contains
       deallocate (g0k)
 
    end subroutine advance_parallel_flow_shear
+
+   !****************************************************************************
+   !               Will the next perpendicular flow-shear step act?               
+   !****************************************************************************
+   ! Returns .true. if the next call of advance_perp_flow_shear changes g: with the
+   ! Hammett algorithm only when a non-zonal mode is due to be remapped, otherwise
+   ! whenever there is a shear or a shift of the flow.
+   !****************************************************************************
+   logical function perp_flow_shear_pending()
+
+      use arrays, only: shift_state
+      use grids_kxky, only: zonal_mode
+
+      implicit none
+
+      !-------------------------------------------------------------------------
+
+      perp_flow_shear_pending = .false.
+      if (.not. prp_shear_enabled) return
+      if (abs(g_exb * g_exbfac) <= epsilon(0.0) .and. abs(v_shift) <= epsilon(0.0)) return
+      if (hammett_flow_shear) then
+         perp_flow_shear_pending = any(shift_state > 0.5 * shift_times .and. .not. zonal_mode)
+      else
+         perp_flow_shear_pending = .true.
+      end if
+      if (abs(v_shift) > epsilon(0.0)) perp_flow_shear_pending = .true.
+
+   end function perp_flow_shear_pending
 
    !****************************************************************************
    !                      Advance perpendicular flow shear                      

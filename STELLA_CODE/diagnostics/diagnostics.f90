@@ -170,6 +170,7 @@ contains
       use diagnostics_distribution, only: write_distribution_to_netcdf_file
       use diagnostics_stresses, only: write_stresses_to_netcdf_file
       use write_diagnostics_to_netcdf, only: sync_nc
+      use diagnostics_energy_budget, only: write_energy_budget
 
       implicit none
 
@@ -213,6 +214,9 @@ contains
       call write_potential_to_netcdf_file(istep, nout, time_individual_diagnostics(:, 2), write_to_netcdf_file)
       call write_omega_to_netcdf_file(istep, nout, time_individual_diagnostics(:, 3), write_to_netcdf_file)  
       call write_fluxes_to_netcdf_file(nout, time_individual_diagnostics(:, 4), write_to_netcdf_file) 
+
+      ! Optional free-energy budget
+      call write_energy_budget(istep)
       
       !**********************************************************************
       !             WRITE TO NETCDF FILES EVERY <NWRITE*NC_MULT>            !

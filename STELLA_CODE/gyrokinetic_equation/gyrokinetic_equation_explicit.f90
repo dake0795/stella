@@ -45,6 +45,7 @@ contains
       use parameters_numerical, only: fully_explicit
       use arrays, only: flow_shear_moving_k
       use gk_flow_shear_moving_k, only: init_flow_shear_moving_k
+      use diagnostics_energy_budget, only: init_energy_budget
 
       implicit none
 
@@ -74,6 +75,9 @@ contains
       if (flow_shear_explicit_remap .and. .not. fully_explicit) &
          call mp_abort('flow_shear_explicit_remap requires a fully explicit simulation')
       if (flow_shear_moving_k) call init_flow_shear_moving_k
+
+      ! Optional free-energy budget diagnostic
+      call init_energy_budget
 
    end subroutine init_gyrokinetic_equation_explicit
 
@@ -184,6 +188,11 @@ contains
       use gk_flow_shear_moving_k, only: prepare_moving_k_stage, relabel_moving_k
       use gk_flow_shear_moving_k, only: rebuild_response_on_label_metric
       
+      ! Free-energy budget
+      use diagnostics_energy_budget, only: energy_budget_on, budget_start_step, budget_incoming_sync
+      use diagnostics_energy_budget, only: budget_commit_step, budget_sync_start, budget_sync_end
+      use diagnostics_energy_budget, only: budget_remap_start, budget_remap_end, budget_end_step
+      
       ! Grids
       use grids_z, only: nzgrid
       use grids_kxky, only: naky
@@ -210,11 +219,15 @@ contains
 
       ! Local variables
       integer :: ivmu, iv, sgn, iky
+      complex, dimension(:, :, :, :, :), allocatable :: gpre
 
       !-------------------------------------------------------------------------
 
       ! Start the timer for the explicit part of the solve
       if (proc0) call time_message(.false., time_gke(:, 8), ' explicit')
+
+      ! Free-energy budget: start from the free energy of the last accepted state
+      call budget_start_step(g)
       
       ! If the fields are not already updated, then update them
       if (include_apar) then
@@ -228,7 +241,14 @@ contains
       end if
 
       ! Make the junction points of the incoming state single-valued
-      if (junction_sync_stage) call synchronise_zgrid_junctions(g)
+      if (junction_sync_stage) then
+         if (energy_budget_on) allocate (gpre, source=g)
+         call synchronise_zgrid_junctions(g)
+         if (energy_budget_on) then
+            call budget_incoming_sync(gpre, g)
+            deallocate (gpre)
+         end if
+      end if
 
       ! Use a numerical time advance scheme to advance the distribution function
       ! in time, based on the explicit terms in the gyrokinetic equation. 
@@ -245,6 +265,9 @@ contains
          call advance_explicit_rk4(g, restart_time_step, istep)
       end select
 
+      ! Free-energy budget: commit the stage powers of an accepted step
+      if (.not. restart_time_step) call budget_commit_step
+
       ! Moving-wavevector flow shear: relabel after an accepted step. If the time
       ! step is restarted, restore the metric of the committed state instead.
       if (flow_shear_moving_k) then
@@ -256,6 +279,9 @@ contains
          end if
          call relabel_moving_k(g)
       end if
+
+      ! Free-energy budget: free energy before the end-of-step projections
+      if (.not. restart_time_step) call budget_sync_start(g)
 
       ! Re-synchronise the junction points of the accepted state. The parallel
       ! vector potential is single-valued at the junctions, so this applies to gbar too.
@@ -292,18 +318,26 @@ contains
          call advance_fields(g, phi, apar, bpar, dist='g')
       end if
 
+      ! Free-energy budget: change by the junction synchronisation and the end-point copy
+      if (.not. restart_time_step) call budget_sync_end(g)
+
       ! Remap the perpendicular flow shear in fully explicit simulations. The remap
       ! vacates the edge label of the shifted modes, which changes the pairing at
       ! the ends of the linked chains, so the junction points are synchronised again.
       if (flow_shear_explicit_remap .and. fully_explicit .and. prp_shear_enabled .and. .not. restart_time_step) then
+         call budget_remap_start(g)
          call advance_perp_flow_shear(g)
          if (junction_sync_step) call synchronise_zgrid_junctions(g)
          fields_updated = .false.
          call advance_fields(g, phi, apar, bpar, dist='g')
+         call budget_remap_end(g)
       end if
 
       ! Implicit mirror and parallel streaming, split from the explicit step
       if ((mirror_split .or. stream_split) .and. .not. restart_time_step) call advance_implicit_split(g)
+
+      ! Free-energy budget: free energy of the accepted state
+      if (.not. restart_time_step) call budget_end_step(g)
 
       ! Stop the timer for the explicit part of the solve
       if (proc0) call time_message(.false., time_gke(:, 8), ' explicit')
@@ -340,6 +374,10 @@ contains
       use arrays, only: flow_shear_moving_k
       use gk_flow_shear_moving_k, only: prepare_moving_k_stream_solve
 
+      ! Free-energy budget
+      use diagnostics_energy_budget, only: budget_split_start, budget_split_end, budget_split_sync_end
+      use diagnostics_energy_budget, only: ib_mi_split, ib_st_split
+
       implicit none
 
       ! Arguments
@@ -351,9 +389,11 @@ contains
       !-------------------------------------------------------------------------
 
       if (mirror_split) then
+         call budget_split_start(g)
          ! Moving-wavevector flow shear: electromagnetic response at the committed metric
          call refresh_mirror_response_for_metric
          call advance_mirror_implicit(.false., g, apar)
+         call budget_split_end(g, ib_mi_split)
 
          ! The mirror acts point-wise in (kx, ky, z), so restore the single-valued
          ! junction points and the periodic end points
@@ -372,9 +412,11 @@ contains
          end if
          fields_updated = .false.
          call advance_fields(g, phi, apar, bpar, dist='g')
+         call budget_split_sync_end(g)
       end if
 
       if (stream_split) then
+         call budget_split_start(g)
          call advance_fields(g, phi, apar, bpar, dist='g')
          ! Moving-wavevector flow shear: iterate to the solution at the physical wavenumbers
          if (flow_shear_moving_k) call prepare_moving_k_stream_solve
@@ -384,6 +426,7 @@ contains
          fields_updated = .false.
          call advance_fields(g, phi, apar, bpar, dist='g')
          if (flow_shear_moving_k) call write_stream_defect_statistics
+         call budget_split_end(g, ib_st_split)
       end if
 
    end subroutine advance_implicit_split
@@ -543,6 +586,10 @@ contains
       use field_equations, only: advance_fields
       use field_equations, only: fields_updated
 
+      ! Free-energy budget
+      use diagnostics_energy_budget, only: budget_shear_stage, budget_stage_start, budget_add_term, budget_stage_end
+      use diagnostics_energy_budget, only: ib_exb, ib_prl, ib_mirror, ib_wdy, ib_wdx, ib_wstar, ib_stream, ib_hyper, ib_other
+
       implicit none
 
       ! Arguments
@@ -586,6 +633,9 @@ contains
       if (include_apar) then
          call advance_fields(pdf, phi, apar, bpar, dist='gbar')
 
+         ! Free-energy budget: work of the moving metric in this stage
+         call budget_shear_stage(pdf)
+
          ! Convert from gbar to g = h - (Z F0/T)( J0 phi + 4 mu (T/Z) (J1/gamma) bpar),
          ! as all terms on RHS of GKE use g rather than gbar
          call gbar_to_g(pdf, apar, 1.0)
@@ -594,6 +644,9 @@ contains
       end if
 
       if (radial_variation) call get_radial_correction(pdf, phi, dist='gbar')
+
+      ! Free-energy budget: h of this stage, for the power of each term
+      call budget_stage_start(pdf)
 
       ! Obtain the gyro-average of the electrostatic potential phi and store in phi_gyro;
       ! this can be a particularly costly operation when simulating a full flux surface
@@ -615,6 +668,7 @@ contains
       ! and thus recomputation of mirror, wdrift, wstar, and parstream
       if (debug) write (*, *) 'time_advance::advance_stella::advance_explicit::solve_gyrokinetic_equation_explicit::advance_ExB_nonlinearity'
       if (include_nonlinear) call advance_ExB_nonlinearity(pdf, rhs, restart_time_step, istep)
+      if (.not. restart_time_step) call budget_add_term(ib_exb, rhs_ky)
 
       ! Include contribution from the parallel nonlinearity (aka turbulent acceleration)
       if (include_parallel_nonlinearity .and. .not. restart_time_step) &
@@ -624,11 +678,13 @@ contains
 
          ! Include contribution from perp flow shear in the parallel component of the toroidal flow
          if ((g_exb**2) > epsilon(0.0)) call advance_parallel_flow_shear(rhs)
+         call budget_add_term(ib_prl, rhs_ky)
 
          ! Calculate and add mirror term to RHS of GK eqn
          if (include_mirror .and. .not. mirror_implicit) then
             if (debug) write (*, *) 'time_advance::advance_stella::advance_explicit::solve_gyrokinetic_equation_explicit::advance_mirror_explicit'
             call advance_mirror_explicit(pdf, rhs)
+            call budget_add_term(ib_mirror, rhs_ky)
          end if
 
          if (.not. drifts_implicit) then
@@ -636,17 +692,20 @@ contains
             if (debug) write (*, *) 'time_advance::advance_stella::advance_explicit::solve_gyrokinetic_equation_explicit::advance_wdrifty_explicit'
             if (abs(ydriftknob) > epsilon(0.0)) then
                call advance_wdrifty_explicit(pdf, phi, bpar, rhs)
+               call budget_add_term(ib_wdy, rhs_ky)
             end if
 
             ! Calculate and add psi-component of magnetic drift term to RHS of GK eqn
             if (debug) write (*, *) 'time_advance::advance_stella::advance_explicit::solve_gyrokinetic_equation_explicit::advance_wdriftx_explicit'
             if (abs(xdriftknob) > epsilon(0.0)) then
                call advance_wdriftx_explicit(pdf, phi, bpar, rhs)
+               call budget_add_term(ib_wdx, rhs_ky)
             end if
             
             ! Calculate and add omega_* term to RHS of GK eqn
             if (debug) write (*, *) 'time_advance::advance_stella::advance_explicit::solve_gyrokinetic_equation_explicit::advance_wstar_explicit'
             call advance_wstar_explicit(phi, rhs)
+            call budget_add_term(ib_wstar, rhs_ky)
          end if
 
          ! Calculate and add contribution from collisions to RHS of GK eqn
@@ -656,10 +715,12 @@ contains
          if (include_parallel_streaming .and. (.not. stream_implicit)) then
             if (debug) write (*, *) 'time_advance::advance_stella::advance_explicit::solve_gyrokinetic_equation_explicit::advance_parallel_streaming_explicit'
             call advance_parallel_streaming_explicit(pdf, phi, bpar, rhs)
+            call budget_add_term(ib_stream, rhs_ky)
          end if
          
          if (hyper_dissipation) then
             call advance_hyper_explicit(pdf, rhs)
+            call budget_add_term(ib_hyper, rhs_ky)
          end if
 
          ! If simulating a full flux surface (flux annulus), all terms to this point have been calculated
@@ -688,7 +749,11 @@ contains
 
          if (include_multibox_krook) call add_multibox_krook(pdf, rhs)
 
+         ! Free-energy budget: any remaining terms
+         call budget_add_term(ib_other, rhs_ky)
+
       end if
+      call budget_stage_end
 
       ! if advancing apar, need to convert input pdf back from g to gbar
       if (include_apar) call gbar_to_g(pdf, apar, -1.0)
@@ -942,6 +1007,7 @@ contains
 
       ! Moving-wavevector flow shear: metric of each Runge-Kutta stage
       use gk_flow_shear_moving_k, only: prepare_moving_k_stage
+      use diagnostics_energy_budget, only: budget_set_stage_weight
       
       ! Grids
       use grids_z, only: nzgrid
@@ -976,12 +1042,14 @@ contains
          select case (counter)
          case (1)
             call prepare_moving_k_stage(0.0)
+            call budget_set_stage_weight(1.0 / 6.0)
             call add_explicit_gyrokinetic_terms(g0, g1, restart_time_step, istep)
          case (2)
             g3 = g0 + 0.5 * g1 ! g1 is h*k1
             if (rk_step) call mb_communicate(g3)
             if (junction_sync_stage) call synchronise_zgrid_junctions(g3)
             call prepare_moving_k_stage(0.5)
+            call budget_set_stage_weight(1.0 / 3.0)
             call add_explicit_gyrokinetic_terms(g3, g2, restart_time_step, istep)
             g1 = g1 + 2.*g2
          case (3)
@@ -989,6 +1057,7 @@ contains
             if (rk_step) call mb_communicate(g2)
             if (junction_sync_stage) call synchronise_zgrid_junctions(g2)
             call prepare_moving_k_stage(0.5)
+            call budget_set_stage_weight(1.0 / 3.0)
             call add_explicit_gyrokinetic_terms(g2, g3, restart_time_step, istep)
             g1 = g1 + 2.*g3
          case (4)
@@ -996,6 +1065,7 @@ contains
             if (rk_step) call mb_communicate(g3)
             if (junction_sync_stage) call synchronise_zgrid_junctions(g3)
             call prepare_moving_k_stage(1.0)
+            call budget_set_stage_weight(1.0 / 6.0)
             call add_explicit_gyrokinetic_terms(g3, g, restart_time_step, istep)
             g1 = g1 + g
          end select

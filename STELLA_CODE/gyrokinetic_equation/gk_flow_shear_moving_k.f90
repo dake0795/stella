@@ -314,12 +314,14 @@ contains
       use grids_z, only: nzgrid, ntubes
       use grids_time, only: code_dt
       use gk_flow_shear, only: g_exb, g_exbfac, shift_times
+      use diagnostics_energy_budget, only: energy_budget_on, budget_relabel_start, budget_relabel_end
 
       implicit none
 
       complex, dimension(:, :, -nzgrid:, :, vmu_lo%llim_proc:), intent(in out) :: g
 
       complex, dimension(:, :, :, :), allocatable :: row
+      logical, dimension(:, :), allocatable :: dropped
       integer :: iky, isrc, idst, nshift
       real :: target, dk
 
@@ -329,6 +331,25 @@ contains
       if (abs(g_exb * g_exbfac) <= epsilon(0.)) return
 
       dk = akx(2)
+
+      ! Free-energy budget: modes that will leave the kx grid
+      if (energy_budget_on) then
+         allocate (dropped(naky, nakx))
+         dropped = .false.
+         do iky = 1, naky
+            if (aky(iky) == 0.0) cycle
+            nshift = floor((shift_state(iky) + code_dt) / shift_times(iky) + 0.5)
+            if (nshift == 0) cycle
+            do isrc = 1, nakx
+               target = akx(isrc) - sign(real(nshift) * dk, g_exb * g_exbfac * aky(iky))
+               idst = minloc(abs(akx - target), dim=1)
+               if (abs(akx(idst) - target) > 64 * epsilon(0.0) * max(1.0, abs(target))) dropped(iky, isrc) = .true.
+            end do
+         end do
+         call budget_relabel_start(g, dropped)
+         deallocate (dropped)
+      end if
+
       allocate (row(nakx, -nzgrid:nzgrid, ntubes, vmu_lo%llim_proc:vmu_lo%ulim_alloc))
       do iky = 1, naky
          if (aky(iky) == 0.0) then
@@ -353,6 +374,7 @@ contains
       deallocate (row)
 
       call prepare_moving_k_stage(0.0)
+      call budget_relabel_end(g)
 
    end subroutine relabel_moving_k
 

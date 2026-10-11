@@ -74,6 +74,7 @@ set(STELLA_SOURCES_f90
   ../STELLA_CODE/diagnostics/diagnostics_potential.f90
   ../STELLA_CODE/diagnostics/diagnostics_write_radial_grid.f90
   ../STELLA_CODE/diagnostics/diagnostics.f90
+  ../STELLA_CODE/diagnostics/diagnostics_energy_budget.f90
   ../STELLA_CODE/dissipation/collisions_dougherty.f90
   ../STELLA_CODE/dissipation/collisions_fokkerplanck.f90
   ../STELLA_CODE/dissipation/dissipation_and_collisions.f90

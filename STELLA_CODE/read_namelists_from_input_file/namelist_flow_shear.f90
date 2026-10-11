@@ -17,6 +17,7 @@
 !     moving_k_stream_offset_rows = 3
 !     moving_k_stream_offset_keep_on_dt_change = .false.
 !     flow_shear_moving_k_import_zero_phase_seed = .false.
+!     energy_budget_diagnostics = .false.
 !     g_exb = 0.0
 !     g_exbfac = 1.0
 !     omprimfac = 1.0
@@ -54,7 +55,8 @@ contains
       omprimfac, explicit_junction_sync, flow_shear_explicit_remap, flow_shear_moving_k, &
       moving_k_stream_defect_tol, moving_k_stream_defect_maxit, moving_k_stream_defect_method, &
       moving_k_stream_offset_sets, moving_k_stream_offset_rows, &
-      moving_k_stream_offset_keep_on_dt_change, flow_shear_moving_k_import_zero_phase_seed)
+      moving_k_stream_offset_keep_on_dt_change, flow_shear_moving_k_import_zero_phase_seed, &
+      energy_budget_diagnostics)
 
       use mp, only: proc0
 
@@ -72,6 +74,7 @@ contains
       integer, intent(out) :: moving_k_stream_offset_rows
       logical, intent(out) :: moving_k_stream_offset_keep_on_dt_change
       logical, intent(out) :: flow_shear_moving_k_import_zero_phase_seed
+      logical, intent(out) :: energy_budget_diagnostics
       real :: g_exb, g_exbfac, omprimfac
       
       !-------------------------------------------------------------------------
@@ -118,6 +121,9 @@ contains
          ! Moving wavevector: allow a restart file written without flow_shear_moving_k, at zero
          ! remap phase, to be used as the initial condition
          flow_shear_moving_k_import_zero_phase_seed = .false.
+         ! Write the free-energy budget of the fully explicit rk4 time advance to <run_name>.budget
+         ! at every nwrite (see diagnostics_energy_budget)
+         energy_budget_diagnostics = .false.
          g_exb = 0.0
          g_exbfac = 1.0
          omprimfac = 1.0
@@ -140,7 +146,8 @@ contains
             moving_k_stream_offset_sets, &
             moving_k_stream_offset_rows, &
             moving_k_stream_offset_keep_on_dt_change, &
-            flow_shear_moving_k_import_zero_phase_seed
+            flow_shear_moving_k_import_zero_phase_seed, &
+            energy_budget_diagnostics
          in_file = input_unit_exist('flow_shear', dexist)
          if (dexist) read (unit=in_file, nml=flow_shear)
 
@@ -168,6 +175,7 @@ contains
          write (unit, '(A, I0)') '  moving_k_stream_offset_rows = ', moving_k_stream_offset_rows
          write (unit, '(A, L1)') '  moving_k_stream_offset_keep_on_dt_change = ', moving_k_stream_offset_keep_on_dt_change
          write (unit, '(A, L1)') '  flow_shear_moving_k_import_zero_phase_seed = ', flow_shear_moving_k_import_zero_phase_seed
+         write (unit, '(A, L1)') '  energy_budget_diagnostics = ', energy_budget_diagnostics
          write (unit, '(A, ES0.4)') '  g_exb = ', g_exb
          write (unit, '(A, ES0.4)') '  g_exbfac = ', g_exbfac
          write (unit, '(A, ES0.4)') '  omprimfac = ', omprimfac
