@@ -441,6 +441,9 @@ contains
    subroutine stella_restore(g, scale, istatus)
    
       use parallelisation_layouts, only: kxkyz_lo
+      use mp, only: broadcast
+      use grids_kxky, only: naky
+      use arrays, only: shift_state
 #ifdef NETCDF_PARALLEL
       use save_stella_for_restart_parallel_netcdf, only: read_stella_data_for_restart_from_single_file
 #endif
@@ -477,10 +480,18 @@ contains
       
       ! Read from multiple netcdf files or a single netcdf file
 #ifdef NETCDF
+      ! The readers return early, without setting <istatus>, on processors without (kx,ky,z) points
+      istatus = 0
       if (save_many) call read_stella_data_for_restart_from_multiple_files(g, scale, istatus)
 #ifdef NETCDF_PARALLEL
       if (.not. save_many) call read_stella_data_for_restart_from_single_file(g, scale, istatus, restart_file)
 #endif
+
+      ! These processors do not read the remap clock <shift_state> either. Every processor
+      ! holds part of g in the (vpa,mu,s) layout and applies the flow-shear remap to it,
+      ! so they all need the clock of the restart file.
+      if (.not. allocated(shift_state)) allocate (shift_state(naky))
+      call broadcast(shift_state)
 #else
       write(*,*) 'Could not read restart data from a netcdf file, since netcdf is not loaded.'
 #endif
