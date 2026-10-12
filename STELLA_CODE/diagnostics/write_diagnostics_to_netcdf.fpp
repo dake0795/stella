@@ -257,6 +257,7 @@ contains
 
       ! Local variables
       character(300) :: filename
+      logical :: file_exists
 
       !-------------------------------------------------------------------------
 
@@ -267,8 +268,11 @@ contains
       if (proc0) then
       
          ! If the simulation is being restarted, continue writing on the existing file
-         ! Otherwise open a new file from scratch.
-         if (restart) then
+         ! Otherwise open a new file from scratch. A simulation can also be started from
+         ! the restart files of another simulation (<restart_file>), in which case its own
+         ! netcdf file does not exist yet.
+         inquire (file=trim(filename), exist=file_exists)
+         if (restart .and. file_exists) then
             ncid = neasyf_open(trim(filename), "rw")
          else
             ncid = neasyf_open(trim(filename), "w")
